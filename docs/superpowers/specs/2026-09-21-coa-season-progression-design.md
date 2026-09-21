@@ -1,31 +1,34 @@
 # CoA Seasonal Progression and Bazaar Economy Design
 
 Date: 2026-09-21
-Status: Approved for final review and implementation by user on 2026-09-21
+Status: Revised after in-client acceptance review; pending user review
 Target: `jealous-sound/azerothcore-wotlk-coa` forked as `xryanv/azerothcore-wotlk-coa`
 
 ## 1. Purpose
 
-Restore a gameplay-earned progression economy for the local Conquest of Azeroth realm without automatically granting the former cash-shop catalog.
+Restore a gameplay-earned seasonal progression system for the local Conquest of Azeroth realm without automatically granting the former cash-shop catalog.
 
-The system has two intentionally separate economies:
+The final design has one seasonal progression track and one spendable shop currency:
 
-1. **Season Progress / Seasonal Points** — account-wide seasonal progression shown through Ascension's existing Seasonal Collection UI. Progress resets when a new season starts. Seasonal Points also reset. Purchased/unlocked rewards remain permanent.
-2. **Bazaar Tokens (item 975001)** — the existing Ethereal Bazaar currency. Tokens are earned from leveling and boss farming and are never reset by a season rollover.
+1. **Season Points** — account-wide, cumulative seasonal progress. They are earned through normal play, are never spent, unlock the seven season tiers, and reset to zero when a new season starts.
+2. **Bazaar Tokens (item 975001)** — the existing Ethereal Bazaar currency. Tokens are earned from leveling and boss farming, are spent on additional former shop/vanity items, and never reset on season rollover.
 
-Normal World of Warcraft acquisition remains authoritative. Quest rewards, world drops, dungeon/raid gear, crafted items, and other normally obtainable items do not appear in a collection until the player obtains them through their normal source.
+Each season tier has exactly **one automatic reward** chosen by a GM. Reaching the tier threshold grants that reward permanently. There is no second Seasonal Point shop.
+
+Normal World of Warcraft acquisition remains authoritative. Quest rewards, world drops, dungeon/raid gear, crafted items, and other normally obtainable items stay obtainable through their normal sources and are not automatically added to the season system.
 
 ## 2. Design principles
 
-- Reuse Ascension's existing Seasonal Collection visual experience rather than replace it.
-- Keep all economy and authorization decisions server-authoritative.
-- Make balance values editable live by GM accounts without recompiling or restarting.
-- Keep permanent collections separate from seasonal state so a reset can never remove earned cosmetics/items.
-- Preserve the existing Ethereal Bazaar and Bazaar Token item rather than invent a replacement currency.
+- Reuse Ascension's existing Seasonal Collection and Collections/vanity browsing experience rather than replace it.
+- Keep Season Points cumulative and non-spendable; Bazaar Tokens are the only shop currency introduced by this system.
+- Keep all progression, reward granting, and GM authorization server-authoritative.
+- Make progression values, tier thresholds, Bazaar Token values, and tier reward assignments editable live by GM accounts.
+- Keep permanent ownership separate from seasonal state so rollover can never remove earned cosmetics/items.
+- Avoid overlapping custom windows with Ascension's existing UI; use the native frames for reward browsing and preview whenever possible.
 
 ## 3. Existing assets to reuse
 
-The current client already contains the original seasonal presentation code and related data:
+The client already contains the original seasonal presentation code and related data:
 
 - `Interface/AddOns/Ascension_SeasonCollection/`
 - `SeasonCollectionUI.xml`
@@ -33,36 +36,40 @@ The current client already contains the original seasonal presentation code and 
 - `SeasonProgressBarMixin.lua`
 - `SeasonRewardMixin.lua`
 - `SeasonalAppearances.dbc`
+- `Appearances.dbc`
 - `VanityCollection.dbc`
-- `ChallengeRewards.dbc`, `ChallengeGroupRewards.dbc`, `AchievementRewards.dbc`, and `TutorialRewards.dbc`
 
-`SeasonRewardMixin` already previews individual items, complete item sets, creatures/mount-style appearances, weapon illusions, static spell visuals, and animated spell visuals. That rendering logic should remain intact.
+`SeasonRewardMixin` already previews individual items, complete item sets, creatures/mount-style appearances, weapon illusions, static spell visuals, and animated spell visuals. That renderer remains the preferred preview path.
 
-The client also contains legacy custom-point APIs/events for Seasonal Points and Bazaar Tokens, but the reconstructed server does not contain the corresponding public seasonal backend. The new module therefore owns authoritative balances and sends state through the existing addon-message transport rather than modifying `Extensions.dll` or depending on undocumented proprietary packets.
+The existing tier circles are real `SeasonTierMixin` buttons and can be adapted for GM editing without replacing the seven-node progress bar.
 
-The current CoA server already uses `CHAT_MSG_ADDON` self-whispers successfully for Character Advancement/resource synchronization. The seasonal system will use the same proven transport with bounded/chunked payloads.
+The stock reward renderer already calls `C_Appearance.GetAppearanceDisplayInfo(appearanceID)`, and the client exposes native collection/store opening behavior such as `OpenStoreCollectionToCategory(...)`. The companion addon should use those native interfaces for reward selection rather than recreating an item browser.
+
+The current CoA server already uses hidden `CHAT_MSG_ADDON` self-whispers successfully for custom client/server synchronization. The season system uses the same bounded transport.
 
 ## 4. Components
 
 ### 4.1 Server module
 
-Add `modules/mod-coa-season-progression/`. It owns season state, progression, currencies, reward catalog, rollover, GM commands/API, audit history, and client synchronization.
+`modules/mod-coa-season-progression/` owns active-season state, account-wide Season Points, tier completion/grants, anti-farm tracking, Bazaar Token earning rules, GM mutations, audit history, and client synchronization.
 
 ### 4.2 Client companion addon
 
-Add a small `CoA_SeasonProgression` addon/patch that integrates with Ascension's existing Seasonal Collection frame. It replaces only the static data-provider/purchase portions while retaining the Ascension artwork, controls, tier bar, animations, and preview model code.
+`CoA_SeasonProgression` adapts Ascension's existing Seasonal Collection frame. It supplies server-authoritative season state, threshold values, tier reward assignments, completion state, and GM edit behavior while retaining Ascension's artwork, tier bar, animations, and preview model code.
 
 ### 4.3 GM administration UI
 
-GM level 3 accounts receive an additional Season Admin frame. The server must authorize every mutation; hiding the frame from non-GMs is convenience only, not security.
+GM level 3 accounts receive a compact Season Admin frame for season lifecycle, economy/progression settings, account diagnostics, and history. Reward browsing is deliberately removed from this custom frame and moved into Ascension's native collection UI.
 
-## 5. Seasonal progression model
+The server authorizes every admin mutation. Client-side visibility is never treated as authorization.
 
-Season Progress is an account-wide integer scoped to the active season. All characters on the same account contribute to the same total.
+## 5. Season Points progression model
 
-Default progression values:
+Season Points are an account-wide integer scoped to the active season. All human-controlled characters on the same account contribute to the same total.
 
-| Activity | Season Progress |
+Default earning values:
+
+| Activity | Season Points |
 | --- | ---: |
 | Complete quest | 3 |
 | Gain a level | 10 |
@@ -74,55 +81,74 @@ Default progression values:
 | Raid boss | 30 |
 | World boss | 40 |
 
-All values are per-season settings editable from the GM UI. Changes affect future awards only; previously earned progress is not recalculated.
+All values are per-season settings editable from the GM UI. Changes affect future awards only; previously earned Season Points are not recalculated.
+
+Season Points are cumulative. Unlocking Tier 2 at 250 points does not subtract 250; the account continues toward Tier 3 from the same cumulative total.
 
 ### 5.1 Elite/rare anti-farm rule
 
-Elite, rare, and rare-elite progress is awarded only once per creature entry, per account, during a configurable lockout window. The default lockout is a rolling 24 hours and is GM-configurable.
+Elite, rare, and rare-elite Season Points are awarded only once per creature entry, per account, during a configurable lockout window. The default lockout is a rolling 24 hours and is GM-configurable.
 
-Dungeon, heroic, raid, and world bosses are intentionally repeatable. Boss farming is a supported progression/currency path.
+Dungeon, heroic, raid, and world bosses remain repeatable. Boss farming is intentionally supported.
 
 ### 5.2 Human-player eligibility
 
-Playerbot-controlled characters must not earn Season Progress, Seasonal Points, or Bazaar Token level rewards. Only human-controlled player sessions participate in the economy. This prevents the realm's large bot population from creating currency/progress or polluting account state.
+Playerbot-controlled characters must not earn Season Points or Bazaar Token level rewards. Only human-controlled sessions participate in the economy.
 
-Level rewards are ledgered per character and attained level so a character cannot gain rewards repeatedly by delevel/relevel manipulation.
+Level rewards are ledgered per character and attained level so delevel/relevel manipulation cannot repeatedly produce rewards.
 
-## 6. Seasonal tier curve and point awards
+## 6. Seven-tier season track
 
-Reuse Ascension's seven-node seasonal progress presentation. The client visual remains a seven-tier bar; the authoritative thresholds and completion state come from the server instead of hard-coded achievement criteria.
+Reuse Ascension's seven-node seasonal presentation. The server supplies the authoritative cumulative thresholds and completion state rather than relying on the client's old hard-coded achievement criteria.
 
-The initial implementation uses one active seven-tier track per season. Ascension's hard-coded four-chapter achievement/event schedule is bypassed for progression, while the surrounding Seasonal Collection UI is retained. The schema/protocol should leave room for multiple chapters later without changing permanent ownership or season-reset semantics.
+The initial implementation uses one seven-tier track per active season. The old four-chapter timed achievement schedule is bypassed for authoritative progression.
 
-Default thresholds and Seasonal Point rewards:
+Default thresholds:
 
-| Tier | Cumulative Progress | Seasonal Points |
-| ---: | ---: | ---: |
-| 1 | 100 | 25 |
-| 2 | 250 | 40 |
-| 3 | 500 | 60 |
-| 4 | 900 | 90 |
-| 5 | 1,400 | 125 |
-| 6 | 2,100 | 175 |
-| 7 | 3,000 | 250 |
+| Tier | Cumulative Season Points |
+| ---: | ---: |
+| 1 | 100 |
+| 2 | 250 |
+| 3 | 500 |
+| 4 | 900 |
+| 5 | 1,400 |
+| 6 | 2,100 |
+| 7 | 3,000 |
 
-A completed tier is recorded once for the account/season. Crossing multiple thresholds in one award grants every newly completed tier exactly once.
+Each tier has exactly one GM-assigned reward. Crossing a threshold performs two durable actions exactly once for that account and season:
 
-All thresholds and tier payouts are editable from the GM UI. Validation requires strictly increasing thresholds and non-negative point awards.
+1. record the tier as completed;
+2. grant the tier's assigned permanent reward.
 
-If a GM lowers an active threshold below an account's existing progress, the server evaluates newly satisfied tiers and grants their points once. Raising a threshold never revokes a completed tier or already awarded Seasonal Points.
+Crossing several thresholds in one award grants every newly completed tier in order exactly once.
 
-## 7. Seasonal Points wallet
+Thresholds are editable from the GM UI and must remain strictly increasing. If a GM lowers an active threshold below an account's current Season Points, the server immediately evaluates newly satisfied tiers and grants their rewards once. Raising a threshold never revokes an already completed tier or reward.
 
-Seasonal Points are account-wide and season-scoped. They are not implemented as normal inventory items.
+## 7. Tier rewards and permanent ownership
 
-The server persists current balance, lifetime earned/spent for the season, and a transaction ledger. The client balance shown in the Ascension seasonal frame is populated from the server's synchronized state.
+There is no Seasonal Point purchase catalog.
 
-Purchases are atomic: validate season, reward availability, ownership, price, balance, and GM-configured restrictions; debit points; grant permanent unlock/item; write ledger; then send updated state.
+Each tier reward assignment contains:
+
+- season id;
+- tier number 1-7;
+- reward type;
+- permanent grant target id;
+- client preview/appearance id when applicable;
+- item quantity when the reward is a physical item;
+- display name/metadata needed for the UI.
+
+Exactly one reward assignment exists per tier. A draft may temporarily have unassigned tiers while it is being edited, but activation is rejected until all seven tiers have valid reward assignments. Reassigning a reward changes what future accounts receive from that tier; it never revokes or replaces rewards already granted to accounts that completed the tier.
+
+Appearance and vanity rewards write through the existing permanent account collection mechanisms used by `mod-ascension-compat`. Those ownership records are not season-scoped and survive every rollover.
+
+Physical item rewards are delivered to the character whose action completed the tier, using durable inventory/mail delivery. Once delivered, they behave as normal items and are never removed by season reset.
+
+The server maintains a per-account/per-season/per-tier grant ledger so retries, reconnects, lowered thresholds, and duplicate events cannot grant the same tier reward twice.
 
 ## 8. Bazaar Token economy
 
-Bazaar Tokens remain the existing inventory item `975001` and remain separate from Seasonal Points. They use normal item/inventory semantics rather than the account-wide Seasonal Point wallet.
+Bazaar Tokens remain inventory item `975001` and are the only spendable shop currency managed by this design.
 
 Default earning rules:
 
@@ -134,223 +160,241 @@ Default earning rules:
 | Raid boss | 4-8 |
 | World boss | 8-15 |
 
-Token ranges are inclusive random quantities and are editable from the GM UI. Season rollover never removes Bazaar Tokens.
+Token ranges and boss drop chances are editable from the GM UI. Season rollover never removes Bazaar Tokens.
 
-Eligible boss kills add Bazaar Tokens to the boss's loot so the currency can be farmed through normal gameplay. The default drop chance is 100% for an eligible boss, with quantity determined by boss category. Drop chance and min/max quantity are independently configurable.
+Eligible boss kills may place Bazaar Tokens into normal boss loot when the core's playerbot loot semantics are safe. If bots can reserve or consume the reward incorrectly, direct durable delivery to eligible human participants is allowed while preserving the same farming rules.
 
-The implementation must avoid playerbots consuming or reserving the currency in a way that makes it unavailable to the human player. Preferred behavior is a loot entry reserved/eligible for participating human players where the core permits it; if 3.3.5 loot semantics make that unreliable with playerbots, the module may deliver the same configured boss reward directly to eligible human participants while retaining normal boss-farming semantics.
-
-The Ethereal Bazaar continues to use existing ExtendedCost/vendor behavior, including recovered prices such as Bazaar Token item `975001` where present. Bazaar shop prices are independent of seasonal reward prices.
+The existing Ethereal Bazaar remains the place to spend Bazaar Tokens on additional cosmetics, former shop items, heirlooms, and vanity rewards. This avoids maintaining a second seasonal shop.
 
 ## 9. Boss classification
 
-Centralize classification in one server helper so both Season Progress and Bazaar Token rewards agree on boss type.
+Centralize classification in one helper so Season Points and Bazaar Token rewards agree on boss type.
 
-Classification should use authoritative map/difficulty/encounter information first, with creature rank as a fallback:
+Use authoritative map/difficulty/encounter data first, with creature rank as a fallback:
 
 - world boss: `CREATURE_ELITE_WORLDBOSS` or configured override;
 - raid boss: boss/encounter creature in a raid map;
 - heroic dungeon boss: boss/encounter creature in heroic dungeon difficulty;
 - dungeon boss: boss/encounter creature in a dungeon map;
-- rare elite / rare / elite: creature template rank.
+- rare elite / rare / elite: creature-template rank.
 
-## 10. Reward catalog and permanent ownership
+## 10. Player Seasonal Collection UI
 
-Each season has a server-side reward catalog. A catalog entry contains at least:
+The ordinary player experience stays inside Ascension's existing `SeasonCollectionFrame`.
 
-- season id;
-- reward id;
-- reward type;
-- client preview/appearance id when applicable;
-- display name/category/order;
-- Seasonal Point cost;
-- enabled flag;
-- optional tier/minimum-progress requirement;
-- permanent grant target (appearance collection, vanity collection, spell/mount/pet unlock, or physical item).
+The companion addon supplies:
 
-Purchasing a cosmetic/appearance writes to the existing permanent account collection used by `mod-ascension-compat`, such as `account_appearance_collection` / `account_vanity_collection` as appropriate. These records are not season-scoped and are never deleted during rollover.
+- active season name/status;
+- current cumulative Season Points;
+- seven thresholds;
+- completed/locked tier state;
+- the one assigned reward for each tier;
+- permanent ownership/grant status.
 
-Physical items already delivered remain normal character inventory/bank/mail items. A season reset never deletes previously awarded items. Consumables continue to obey normal item behavior after delivery.
+The seven tier circles remain the primary progression affordance. Selecting or hovering a tier shows its assigned reward through Ascension's existing reward/model renderer.
 
-The server rejects purchasing an already-owned permanent cosmetic unless a reward type is explicitly marked repeatable.
+There is no purchase button or Seasonal Point balance-to-spend. For a locked tier the UI communicates the required cumulative Season Points. For a completed tier it communicates that the reward has been earned/granted.
 
-Normal gameplay loot is not imported into the seasonal catalog automatically and is not unlocked merely because it exists in the client catalog.
+The addon must clear stale native reward state when changing tiers/seasons so old previews, buttons, or collection data cannot overlap the current tier.
 
-## 11. Ascension Seasonal Collection UI integration
+## 11. GM tier-reward assignment flow
 
-Retain Ascension's existing `SeasonCollectionFrame`, tier visuals, animations, navigation, and `SeasonRewardMixin` preview implementation.
+Reward assignment is performed from the native Ascension UI, not from a custom text catalog.
 
-The companion addon replaces the static reward-list/data-provider path with server-synchronized active-season data. It must not require rebuilding `SeasonalAppearances.dbc` whenever a GM changes a season.
+For a server-confirmed GM viewing a draft or editable season:
 
-For rewards that map to client-known appearance IDs, pass those IDs into the existing preview code. For supported physical-item rewards without a seasonal appearance row, use the same model frame and item-preview primitives so the visual experience remains consistent.
+1. enter **GM Tier Edit Mode** from the season window;
+2. click one of the seven tier circles;
+3. the addon records the selected tier and opens Ascension's native collection/store browser;
+4. the GM browses/searches normally and uses Ascension's native preview experience to inspect the reward;
+5. while an eligible collection entry is selected, the addon adds one compact action such as **Assign to Tier 4**;
+6. pressing that action sends the selected grant/preview metadata to the server;
+7. the server validates GM security and reward validity, saves the one-to-one tier assignment, increments the season revision, and invalidates clients;
+8. returning to the season window immediately shows the assigned reward on that tier.
 
-### 11.1 Client/server transport
+The native collection browser remains responsible for category navigation, search, appearance/model preview, and collection presentation. The companion addon should add only the minimum selection/assignment affordance needed to capture the chosen reward.
 
-Use the existing hidden addon-message self-whisper pattern already proven by `mod-ascension-compat`.
+When GM Tier Edit Mode is not active, Ascension's collection UI behaves normally.
 
-Logical message families:
-
-- `COA_SEASON_STATE` — active season metadata, progress, tier completion, Seasonal Point balance, admin flag;
-- `COA_SEASON_CATALOG` — chunked reward catalog payload;
-- `COA_SEASON_PURCHASE` — client purchase request;
-- `COA_SEASON_ADMIN` — authenticated GM read/write requests;
-- `COA_SEASON_RESULT` — success/error response and refreshed state.
-
-Payloads must be versioned, bounded below the chat packet limit, chunked when necessary, and tolerant of missing/out-of-order catalog chunks. No client-supplied balance, price, ownership, or GM status is trusted.
+If a reward type cannot be represented by the native collection browser, a narrow fallback "assign by validated ID" control may exist in the GM admin frame, but it is secondary and should not become a second full reward browser.
 
 ## 12. GM Season Admin UI
 
-Only a server-confirmed GM level 3 session may mutate season configuration. The addon should expose these tabs:
+The custom Season Admin frame contains four responsibilities:
 
-1. **Season** — create draft season, name/id, activate/archive, copy previous settings, rollover preview.
-2. **Progression & Economy** — edit every activity progress value, Bazaar Token level reward, boss token min/max/chance, elite/rare lockout, and seven tier thresholds/payouts.
-3. **Rewards** — search/browse client-known rewards, preview them with Ascension's model viewer, set cost/category/order/requirements, add/remove/enable/disable entries.
-4. **Accounts** — inspect account progress/balance and perform explicit GM test adjustments with reason text.
-5. **History** — view season rollover, economy changes, reward-catalog changes, purchases, and GM adjustments.
+1. **Season** — create draft, select season, copy previous settings, activate/archive, and confirm rollover.
+2. **Economy** — edit activity Season Point awards, Bazaar Token level/boss values and chances, elite/rare lockout, and seven tier thresholds.
+3. **Accounts** — inspect account Season Points/tier completion and perform explicit GM test adjustments with an audit reason.
+4. **History** — inspect rollover, settings changes, tier-reward assignments, tier grants, and GM adjustments.
 
-The UI provides Save, Discard Changes, Reset to Defaults, and Copy Previous Season Settings actions. Invalid min/max ranges, negative values, duplicate catalog keys, and non-increasing tier thresholds are rejected before save and again server-side.
+The old custom **Rewards** browser/tab is removed.
 
-Editing an active season is allowed. The UI warns that progression-rate changes affect future awards only. Tier threshold changes show how lowering a threshold can immediately complete tiers for accounts whose stored progress already qualifies.
+To prevent the graphical overlap seen during acceptance testing, opening the standalone Season Admin configuration frame hides/closes the large native season frame. Choosing **Edit Tier Rewards** closes/hides the admin configuration frame and returns to the native season frame in GM Tier Edit Mode. The two large management surfaces should not be displayed over one another.
 
-## 13. Season rollover semantics
+The UI provides Save, Discard Changes, Reset to Defaults, and Copy Previous Season Settings where applicable. Invalid min/max token ranges, negative values, non-increasing tier thresholds, and attempts to activate a season without all seven tier rewards are rejected both client-side and server-side.
 
-Starting a new season is a destructive economy operation and requires a typed confirmation in the GM UI, for example `RESET SEASON`.
+## 13. Client/server transport
 
-Rollover first enters a short server-side economy lock so purchases and season mutations cannot race the transition, then performs one atomic server operation:
+Use the existing hidden addon-message self-whisper pattern.
+
+Logical message families are reduced to:
+
+- `COA_SEASON_STATE` — season metadata, cumulative Season Points, tier completion, tier assignments, admin flag;
+- `COA_SEASON_ADMIN` — authenticated GM read/write requests, including threshold changes and tier reward assignment;
+- `COA_SEASON_RESULT` — mutation result, invalidation, and refreshed state.
+
+There is no player `PURCHASE` request and no season-shop catalog synchronization.
+
+Payloads remain versioned, bounded below the chat packet limit, and idempotent for durable GM mutations. No client-supplied progress, ownership, reward validity, or GM status is trusted.
+
+## 14. Season rollover semantics
+
+Starting a new season requires typed GM confirmation such as `RESET SEASON`.
+
+Rollover performs one serialized server operation:
 
 - archive the outgoing season;
-- create/activate the incoming season;
-- reset every account's active Season Progress to 0;
-- reset every account's active Seasonal Point balance to 0;
-- clear active tier-completion state;
-- clear elite/rare daily tracking for the new season;
+- activate the incoming season;
+- reset every account's active Season Points to 0;
+- clear active tier-completion/grant state for the new season;
+- clear elite/rare lockout state for the new season;
 - preserve all permanent collections and previously delivered items;
-- preserve Bazaar Tokens and all unrelated currencies;
-- write a complete rollover audit record.
+- preserve Bazaar Tokens and unrelated currencies;
+- preserve archived season/tier/grant history;
+- write a rollover audit record.
 
-Previously owned cosmetics, appearances, mounts, pets, vanity rewards, heirlooms, and physical items remain owned. Rollover never deletes rows from permanent ownership tables.
+Previously earned cosmetics, appearances, mounts, pets, vanity rewards, heirlooms, and physical items remain owned permanently.
 
-The outgoing season's progress, points earned/spent, purchases, and GM adjustments remain queryable in history even though the active balances reset.
+## 15. Persistence model
 
-## 14. Persistence model
+Use module-owned tables rather than arena-season tables.
 
-Use explicit module-owned tables rather than overloading unrelated arena-season tables.
-
-Proposed logical tables:
+Logical tables:
 
 - `coa_season` — season metadata/status/timestamps;
-- `coa_season_settings` — per-season progression/economy configuration;
-- `coa_season_tier` — seven threshold/payout rows per season;
-- `coa_season_account` — account progress, current points, earned/spent totals;
-- `coa_season_account_tier` — completed tier ledger;
-- `coa_season_reward` — active/archived reward catalog;
-- `coa_season_purchase` — immutable purchase/grant ledger;
+- `coa_season_settings` — per-season Season Point and Bazaar economy settings;
+- `coa_season_tier` — seven strictly ordered threshold rows per season;
+- `coa_season_tier_reward` — exactly one reward assignment per `(season, tier)`;
+- `coa_season_account` — account cumulative Season Points and current completed tier state;
+- `coa_season_tier_grant` — immutable per-account/per-season/per-tier completion/grant ledger;
 - `coa_season_daily_kill` — account/creature-entry anti-farm tracking;
-- `coa_season_level_reward` — per-character/per-level reward ledger;
-- `coa_season_audit` — GM/config/rollover history.
+- `coa_season_level_reward` — per-character/per-level Bazaar reward ledger;
+- `coa_season_audit` — GM/config/rollover/grant history.
 
-Indexes must cover active season lookups, account+season, daily account+creature entry, reward catalog ordering, and transaction history.
+The previously designed spendable-point purchase catalog and purchase ledger are removed from the target schema.
 
-## 15. Security and consistency
+The current feature branch contains an earlier in-progress schema implementing spendable Seasonal Points. It has only been exercised against an isolated cloned test database, not the live realm. The implementation revision must replace that pending schema before live deployment and rebuild the isolated test clone from the pre-season backup before runtime acceptance is repeated.
 
-- Every admin mutation checks the authenticated session's server-side GM level; client visibility is not authorization.
-- Every purchase re-reads authoritative balance, catalog entry, season state, and ownership before commit.
-- Rollover, purchases, tier grants, and GM balance adjustments use database transactions where multiple writes must stay consistent.
-- Client requests include a protocol version and request id so retries can be made idempotent where practical.
-- Malformed/oversized addon payloads are rejected and logged without mutating state.
-- A GM may preview/edit a draft season, but players only receive catalog/state for the active season.
+## 16. Security and consistency
 
-## 16. Live configuration behavior
+- Every admin mutation checks the authenticated session's server-side GM level.
+- Every tier completion re-reads authoritative season, threshold, assignment, account state, and permanent ownership before grant.
+- Tier completion plus durable reward grant bookkeeping is transactional where multiple writes must remain consistent.
+- Rollover is serialized against progress/tier mutations.
+- Durable requests use request ids for idempotent retry.
+- Malformed or oversized addon payloads are rejected without mutation.
+- Playerbots cannot create Season Points, tier grants, or Bazaar Token level rewards.
+- A draft tier assignment is visible/editable to authorized GMs; ordinary players receive only the active season.
 
-All progression/economy values are stored in database-backed season settings and cached by the module. A successful GM save invalidates/reloads the relevant cache immediately; no worldserver restart is required.
+## 17. Live configuration behavior
 
-Changing activity reward values affects only future events. Existing progress and transaction history remain unchanged.
+All activity values, thresholds, token values, and tier assignments are database-backed and update live without restarting worldserver.
 
-Changing a reward's price affects future purchases only. Existing unlocks are never repriced or revoked.
+Changing an activity value affects future awards only.
 
-Disabling a reward removes it from new purchase availability but does not remove it from accounts that already own it.
+Lowering a threshold can immediately complete the tier for accounts already above it; those rewards are granted exactly once.
 
-## 17. Initial realm migration
+Changing a tier reward affects future tier completions only. Accounts that already completed that tier keep the reward they previously received and are not retroactively given the replacement.
 
-Before enabling the progression economy:
+## 18. Initial realm migration
+
+Before enabling the final system on the live realm:
 
 1. set `AscensionCompat.UnlockAllVanity = 0`;
 2. set `AscensionCompat.UnlockLocalAppearanceCatalog = 0`;
-3. do not delete existing permanent ownership records;
-4. create Season 1 with the approved default settings;
-5. seed a curated initial seasonal reward catalog from client-known appearances;
+3. preserve all genuine permanent ownership records;
+4. create Season 1 with the approved default progression/Bazaar settings;
+5. assign one curated reward to each of the seven season tiers using the GM native-browser workflow;
 6. keep the existing Ethereal Bazaar and item `975001` intact;
-7. verify normal quest/drop/crafting acquisition still behaves unchanged.
+7. verify additional former shop/vanity items remain available through Bazaar configuration rather than a second Seasonal Point shop;
+8. verify normal quest/drop/crafting acquisition remains unchanged.
 
-For the current test account, any cosmetics that were visible only because the two unlock-all flags were enabled should become locked unless a real ownership row exists. Genuine permanent ownership rows remain valid.
+## 19. Testing strategy
 
-## 18. Testing strategy
+### Server coverage
 
-### Server unit/integration coverage
-
-- account-wide progress shared across characters;
-- exact progress values for quest, level, elite, rare, rare elite, dungeon, heroic, raid, and world-boss events;
-- elite/rare once-per-account/per-entry rolling-24-hour lockout enforcement;
-- repeatable boss progress;
+- account-wide Season Points shared across characters;
+- exact point awards for quest, level, elite, rare, rare elite, dungeon, heroic, raid, and world-boss events;
+- elite/rare once-per-account/per-entry lockout;
+- repeatable boss progression;
 - playerbot exclusion;
 - level reward idempotency;
 - crossing one or multiple tier thresholds;
-- tier reward exactly-once behavior;
-- atomic Seasonal Point purchase and insufficient-funds rejection;
-- permanent ownership grant and duplicate-purchase rejection;
+- exactly one reward assignment per tier;
+- tier completion and reward grant exactly once;
+- permanent ownership survives relog and rollover;
+- physical-item delivery survives disconnect/retry;
 - Bazaar Token quantity bounds and boss classification;
-- live settings reload;
-- rollover is serialized against purchases, resets seasonal state, and preserves permanent unlocks/Bazaar Tokens;
+- live threshold/settings changes;
+- rollover resets Season Points/tier state but preserves permanent rewards/Bazaar Tokens;
 - GM authorization and malformed addon-message rejection.
 
 ### Client validation
 
 - existing Ascension seasonal frame opens without Lua errors;
-- seven-tier progress bar reflects server values and updates live;
-- balance updates after tier rewards and purchases;
-- reward navigation previews item, set, creature/mount, illusion, and spell-visual examples;
-- purchase button reports success/error cleanly;
-- GM editor can preview, edit, save, discard, and roll over a test season;
-- non-GM accounts cannot invoke admin mutations even with manually crafted addon messages.
+- no overlap between standalone Season Admin and the native season frame;
+- seven tier circles reflect server thresholds/completion and no longer display obsolete point-payout/purchase semantics;
+- selecting a tier shows its one assigned reward through the native renderer;
+- GM Tier Edit Mode makes tier circles editable without changing normal player behavior;
+- clicking a tier opens the native Ascension collection browser;
+- item/set/creature/mount/illusion/spell-visual previews remain native;
+- **Assign to Tier N** saves and immediately refreshes the tier reward;
+- no custom reward list is required for normal assignment;
+- non-GM accounts cannot invoke tier assignment even with crafted addon messages.
 
-### Full-stack acceptance test
+### Full-stack acceptance
 
-Run a fresh test season with a human GM and at least one non-GM test account. Exercise questing, leveling, elite/rare lockout, dungeon boss repeat farming, Bazaar purchase, Seasonal purchase, logout/login persistence, and a complete rollover. Confirm owned cosmetics/items survive while progress and Seasonal Points reset to zero.
+On an isolated clone, run a complete draft and active season with a GM and non-GM account. Assign all seven rewards through the native browser, earn Season Points through several event types, cross multiple tiers, verify permanent grants, farm/spend Bazaar Tokens, relog, and roll to a new season. Confirm Season Points reset while all earned tier rewards and Bazaar Tokens survive.
 
-## 19. Deployment and rollback
+## 20. Deployment and rollback
 
-Ship the system disabled by default behind a module/config enable flag until database migrations, server hooks, client addon, and full-stack tests all pass.
+Ship disabled by default until the revised schema, server hooks, native UI adaptation, and full-stack acceptance pass.
 
-Recommended rollout order:
+Recommended revised rollout order:
 
-1. database schema and read-only season state;
-2. server progression accounting with GM diagnostic commands;
-3. client seasonal-state synchronization and existing UI integration;
-4. reward purchase/permanent ownership path;
-5. Bazaar Token level/boss rewards;
-6. GM Season Admin editor;
-7. rollover path and destructive-action confirmation;
-8. disable global vanity/appearance unlock flags and run acceptance test.
+1. replace the pending spendable-point schema with cumulative Season Points + one reward per tier;
+2. refactor server progression/tier-grant logic and remove season purchase handling;
+3. simplify client protocol/state by removing purchase/catalog paths;
+4. clean up the native season frame integration and stale visual state;
+5. implement GM Tier Edit Mode and native collection-browser assignment;
+6. simplify the standalone admin window to Season/Economy/Accounts/History;
+7. rebuild and repeat isolated full-stack acceptance;
+8. only then prepare live migration/config deployment.
 
-Rollback must be non-destructive: disabling the module stops new progress/purchases but leaves module tables and permanent collection records untouched. The two global unlock-all flags can be temporarily re-enabled for diagnosis without deleting season data.
+Rollback remains non-destructive: disabling the module stops new progression/grants while leaving permanent collection records untouched. The global unlock flags may be temporarily re-enabled for diagnosis without deleting season history.
 
-## 20. Alternatives considered
+## 21. Alternatives considered
 
-### Rewrite `SeasonalAppearances.dbc` for every season
+### Keep a spendable Seasonal Point shop plus Bazaar
 
-Rejected as the primary mechanism. It preserves the stock data path but requires client MPQ/DBC repatching for routine GM reward changes and undermines live administration.
+Rejected after in-client review. It duplicates shop responsibilities, requires two reward catalogs/economies, complicates the GM workflow, and creates UI overlap without improving the desired gameplay loop.
 
-### Build a completely new Seasonal UI
+### Keep the custom text/list reward browser
 
-Rejected. It duplicates polished Ascension functionality already present in the client and loses the existing item/set/creature/spell preview experience.
+Rejected as the main reward editor. It technically works but loses the polished Ascension browsing and preview experience and produced unnecessary graphical overlap during acceptance testing.
 
-### Selected: dynamic data-provider integration
+### Rewrite `SeasonalAppearances.dbc` every season
 
-Keep Ascension's frame and preview implementation while supplying active-season progression, balance, catalog, pricing, and purchase actions from the new server module through a companion addon. This preserves the original look while making seasons server-configurable.
+Rejected because routine reward changes would require repatching client data.
 
-## 21. Success criteria
+### Selected: cumulative Season Points + native tier assignment
 
-The design is complete when a GM can create/configure a season in game, choose and preview rewards, tune all progression/token/tier values live, and activate the season; a normal human account can earn shared Season Progress through gameplay, receive tier Seasonal Points, spend them on permanent rewards in the existing Ascension seasonal UI, earn Bazaar Tokens from leveling/boss farming, and then experience a season rollover that resets only seasonal progress/points while preserving all permanent unlocks, physical items, and Bazaar Tokens.
-## 22. Implementation review refinements
+Season Points are progression only. Each tier grants one permanent reward. Bazaar Tokens buy everything else. GMs assign tier rewards by clicking the existing tier circles and selecting through Ascension's native collection/preview UI.
 
-The implementation plan records the concrete RPC contract, legacy Bazaar grant suppression, durable delivery/commit acknowledgement, account serialization, group human credit, and real frame-instance adaptation. The initial catalog is explicitly curated through the GM editor to avoid importing ordinary gameplay loot. Runtime activation is a separate validation gate; source ships disabled by default.
+## 22. Success criteria
+
+The design is complete when a GM can create/configure a season, tune Season Point/Bazaar values, click any tier circle, browse and preview rewards in Ascension's native collection UI, and assign exactly one permanent reward to that tier; a normal human account can earn cumulative Season Points, automatically receive each tier reward exactly once, earn/spend Bazaar Tokens for additional items, and then enter a new season with Season Points reset while every previously earned reward and Bazaar Token remains intact.
+
+## 23. Revision note
+
+This revision supersedes the earlier spendable Seasonal Point purchase model already partially implemented on the feature branch. The isolated runtime test proved the server migration, GM bootstrap, addon transport, and native season-frame integration are viable, but also exposed graphical overlap and confirmed that reward selection belongs in Ascension's native browser. The next implementation plan must explicitly remove the superseded purchase/catalog behavior rather than layering the new design on top of it.
