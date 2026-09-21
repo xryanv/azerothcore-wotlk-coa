@@ -18,8 +18,7 @@ void Check(bool condition, char const* name)
 }
 bool Same(CoASeason::Account const& a, CoASeason::Account const& b)
 {
-    return a.progress == b.progress && a.points == b.points && a.earned == b.earned &&
-        a.spent == b.spent && a.mask == b.mask;
+    return a.points == b.points && a.mask == b.mask;
 }
 }
 
@@ -28,38 +27,33 @@ int main()
     using namespace CoASeason;
     constexpr uint32_t Max = std::numeric_limits<uint32_t>::max();
     Account account{};
-    Check(AddProgress(account, 500, DefaultTiers), "multiple tier award accepted");
-    Check(account.progress == 500 && account.points == 125 && account.earned == 125 &&
-        account.spent == 0 && account.mask == 7, "crossed tiers paid exactly once");
-    Check(Reconcile(account, DefaultTiers) && account.points == 125, "reconcile never re-pays claimed tiers");
-    account.progress = 50;
-    auto changed = DefaultTiers;
-    changed[0].threshold = 200;
-    Check(Reconcile(account, changed) && account.mask == 7 && account.points == 125,
-        "raising thresholds preserves completed tier bits");
-    account.progress = 899;
-    changed[3].threshold = 899;
-    Check(Reconcile(account, changed) && account.points == 215 && account.mask == 15,
-        "lowering thresholds awards only newly reached tiers");
+    Check(AddPoints(account, 600, DefaultTiers), "multiple tier completion accepted");
+    Check(account.points == 600 && account.mask == 7, "crossed tiers are marked exactly once");
+    uint32_t newly = NewlyCompleted(Account{}, account);
+    Check(newly == 7, "newly completed returns only crossed tier bits");
+    Account same = account;
+    Check(Reconcile(account, DefaultTiers) && account.points == 600 && account.mask == 7,
+        "reconcile never changes cumulative points or repeats completion");
+    Check(NewlyCompleted(same, account) == 0, "repeat reconcile has no new tier bits");
 
-    Account overflow{Max, 10, 10, 0, 127};
+    auto changed = DefaultTiers;
+    changed = {{{700}, {800}, {900}, {1000}, {1500}, {2200}, {3100}}};
+    Check(Reconcile(account, changed) && account.mask == 7 && account.points == 600,
+        "raising thresholds preserves completed tier bits");
+    changed = DefaultTiers;
+    changed[3].threshold = 600;
+    Account beforeLower = account;
+    Check(Reconcile(account, changed) && account.points == 600 && account.mask == 15,
+        "lowering thresholds completes newly satisfied tiers without paying currency");
+    Check(NewlyCompleted(beforeLower, account) == 8, "lowered threshold reports one new tier");
+
+    Account overflow{Max, 127};
     Account original = overflow;
-    Check(!AddProgress(overflow, 1, DefaultTiers) && Same(overflow, original), "progress overflow is atomic");
-    overflow = {99, Max - 24, 0, 0, 0};
-    original = overflow;
-    Check(!AddProgress(overflow, 1, DefaultTiers) && Same(overflow, original), "point overflow is atomic");
-    overflow = {100, 0, Max - 24, 0, 0};
-    original = overflow;
-    Check(!Reconcile(overflow, DefaultTiers) && Same(overflow, original), "earned overflow is atomic");
-    account = {0, 0, 0, 0, 0};
+    Check(!AddPoints(overflow, 1, DefaultTiers) && Same(overflow, original), "point overflow is atomic");
+    account = {};
     changed = DefaultTiers;
     changed[1].threshold = changed[0].threshold;
-    Check(!AddProgress(account, 500, changed) && account.progress == 0, "invalid thresholds rejected atomically");
-    changed = DefaultTiers;
-    for (Tier& tier : changed)
-        tier.points = Max;
-    Account tierValidation{Max, 0, 0, 0, 0};
-    Check(!Reconcile(tierValidation, changed), "tier payout sum overflow rejected");
+    Check(!AddPoints(account, 500, changed) && Same(account, Account{}), "invalid thresholds rejected atomically");
 
     Check(NewLevels(10, 12) == 2 && NewLevels(12, 10) == 0 && NewLevels(12, 12) == 0,
         "levels respect the persisted high water");
@@ -120,26 +114,13 @@ int main()
         Check(!Parse(value, fields) && fields == std::vector<std::string>{"unchanged"},
             "invalid envelope or encoded field rejected atomically");
     }
-    Account buyer{500, 100, 125, 25, 7};
-    Account before = buyer;
-    Check(!Purchase(buyer, 4, 8, 3, 8, 40, 1, false, true) && Same(buyer, before),
-        "stale season purchase leaves wallet unchanged");
-    Check(!Purchase(buyer, 4, 8, 4, 7, 40, 1, false, true) && Same(buyer, before),
-        "stale revision purchase leaves wallet unchanged");
-    Check(!Purchase(buyer, 4, 8, 4, 8, 101, 1, false, true) && Same(buyer, before),
-        "insufficient funds do not debit");
-    Check(!Purchase(buyer, 4, 8, 4, 8, 40, 1, true, true) && Same(buyer, before),
-        "owned permanent reward cannot be bought again");
-    Check(!Purchase(buyer, 4, 8, 4, 8, 40, 4, false, true) && Same(buyer, before),
-        "minimum tier checks permanent completion bit");
-    Check(!Purchase(buyer, 4, 8, 4, 8, 40, 1, false, false) && Same(buyer, before),
-        "disabled reward cannot debit");
-    Check(Purchase(buyer, 4, 8, 4, 8, 40, 1, false, true) &&
-        buyer.points == 60 && buyer.spent == 65, "valid purchase debits and records spending");
-    before = buyer;
-    Check(!Adjust(buyer, -61) && Same(buyer, before), "adjustment cannot underflow");
-    Check(Adjust(buyer, -60) && buyer.points == 0 && buyer.spent == 125, "negative adjustment recorded");
-    Check(Adjust(buyer, 10) && buyer.points == 10 && buyer.earned == 135, "positive adjustment recorded");
+    Account adjusted{500, 7};
+    Check(AdjustPoints(adjusted, -501) == false && adjusted.points == 500 && adjusted.mask == 7,
+        "negative GM adjustment cannot underflow or clear completed tiers");
+    Check(AdjustPoints(adjusted, -450) && adjusted.points == 50 && adjusted.mask == 7,
+        "lowering points preserves completed tier bits");
+    Check(AdjustPoints(adjusted, 50) && adjusted.points == 100 && adjusted.mask == 7,
+        "positive adjustment changes cumulative points without spending state");
     if (!failures)
         std::cout << "Season rules and protocol tests passed\n";
     return failures ? 1 : 0;

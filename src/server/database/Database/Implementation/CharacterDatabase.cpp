@@ -702,10 +702,10 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     // NULL keeps table integer widths intact (an unsigned BIGINT zero would widen INT columns).
     PrepareStatement(CHAR_SEL_COA_SCHEMA,
         "SELECT (SELECT COUNT(*) FROM `coa_season`), (SELECT COUNT(*) FROM `coa_season_settings`), "
-        "(SELECT COUNT(*) FROM `coa_season_tier`), (SELECT COUNT(*) FROM `coa_season_account`), (SELECT "
-        "COUNT(*) FROM `coa_season_reward`), (SELECT COUNT(*) FROM `coa_season_daily_kill`), (SELECT "
-        "COUNT(*) FROM `coa_season_level_reward`), (SELECT COUNT(*) FROM `coa_season_request`), (SELECT "
-        "COUNT(*) FROM `coa_season_purchase`), (SELECT COUNT(*) FROM `coa_season_audit`)", CONNECTION_ASYNC);
+        "(SELECT COUNT(*) FROM `coa_season_tier`), (SELECT COUNT(*) FROM `coa_season_tier_reward`), "
+        "(SELECT COUNT(*) FROM `coa_season_account`), (SELECT COUNT(*) FROM `coa_season_tier_grant`), "
+        "(SELECT COUNT(*) FROM `coa_season_daily_kill`), (SELECT COUNT(*) FROM `coa_season_level_reward`), "
+        "(SELECT COUNT(*) FROM `coa_season_request`), (SELECT COUNT(*) FROM `coa_season_audit`)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_COA_SEASONS,
         "SELECT 1 AS valid, `id`, `name`, `status`, `revision`, `created`, `activated` FROM `coa_season` "
         "UNION ALL SELECT 0, NULL, NULL, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
@@ -713,15 +713,17 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "SELECT 1 AS valid, `season`, `key`, `value` FROM `coa_season_settings` UNION ALL SELECT 0, NULL, "
         "NULL, NULL", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_COA_TIERS,
-        "SELECT 1 AS valid, `season`, `tier`, `threshold`, `points` FROM `coa_season_tier` UNION ALL "
-        "SELECT 0, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
+        "SELECT 1 AS valid, `season`, `tier`, `threshold` FROM `coa_season_tier` UNION ALL SELECT 0, NULL, "
+        "NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_TIER_REWARDS,
+        "SELECT 1 AS valid, `season`, `tier`, `type`, `target`, `preview`, `count`, `name` FROM "
+        "`coa_season_tier_reward` UNION ALL SELECT 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_COA_ACCOUNTS,
-        "SELECT 1 AS valid, `season`, `account`, `progress`, `points`, `earned`, `spent`, `mask` FROM "
-        "`coa_season_account` UNION ALL SELECT 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
-    PrepareStatement(CHAR_SEL_COA_REWARDS,
-        "SELECT 1 AS valid, `season`, `id`, `type`, `target`, `preview`, `count`, `cost`, `min_tier`, "
-        "`enabled`, `display_order`, `name`, `category` FROM `coa_season_reward` UNION ALL SELECT 0, "
-        "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
+        "SELECT 1 AS valid, `season`, `account`, `points`, `mask` FROM `coa_season_account` UNION ALL "
+        "SELECT 0, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_TIER_GRANT,
+        "SELECT 1 AS valid, `type`, `target`, `count` FROM `coa_season_tier_grant` WHERE `season` = ? AND "
+        "`account` = ? AND `tier` = ? UNION ALL SELECT 0, NULL, NULL, NULL", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_COA_LOCKOUTS,
         "SELECT 1 AS valid, `season`, `account`, `entry`, `last_time` FROM `coa_season_daily_kill` UNION "
         "ALL SELECT 0, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
@@ -731,9 +733,6 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_SEL_COA_REQUEST,
         "SELECT 1 AS valid, `payload`, `response` FROM `coa_season_request` WHERE `account` = ? AND "
         "`request_id` = ? UNION ALL SELECT 0, NULL, NULL", CONNECTION_ASYNC);
-    PrepareStatement(CHAR_SEL_COA_PURCHASES,
-        "SELECT 1 AS valid, `reward` FROM `coa_season_purchase` WHERE `season` = ? AND `account` = ? "
-        "UNION ALL SELECT 0, NULL", CONNECTION_ASYNC);
     PrepareStatement(CHAR_REP_COA_SEASON,
         "INSERT INTO `coa_season` (`id`, `name`, `status`, `revision`, `created`, `activated`) VALUES (?, "
         "?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `status` = VALUES(`status`), "
@@ -742,20 +741,15 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "INSERT INTO `coa_season_settings` (`season`, `key`, `value`) VALUES (?, ?, ?) ON DUPLICATE KEY "
         "UPDATE `value` = VALUES(`value`)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_REP_COA_TIER,
-        "INSERT INTO `coa_season_tier` (`season`, `tier`, `threshold`, `points`) VALUES (?, ?, ?, ?) ON "
-        "DUPLICATE KEY UPDATE `threshold` = VALUES(`threshold`), `points` = VALUES(`points`)", CONNECTION_ASYNC);
+        "INSERT INTO `coa_season_tier` (`season`, `tier`, `threshold`) VALUES (?, ?, ?) ON DUPLICATE KEY "
+        "UPDATE `threshold` = VALUES(`threshold`)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_REP_COA_TIER_REWARD,
+        "INSERT INTO `coa_season_tier_reward` (`season`, `tier`, `type`, `target`, `preview`, `count`, "
+        "`name`) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `type` = VALUES(`type`), `target` = "
+        "VALUES(`target`), `preview` = VALUES(`preview`), `count` = VALUES(`count`), `name` = VALUES(`name`)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_REP_COA_ACCOUNT,
-        "INSERT INTO `coa_season_account` (`season`, `account`, `progress`, `points`, `earned`, `spent`, "
-        "`mask`) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `progress` = VALUES(`progress`), "
-        "`points` = VALUES(`points`), `earned` = VALUES(`earned`), `spent` = VALUES(`spent`), `mask` = "
-        "VALUES(`mask`)", CONNECTION_ASYNC);
-    PrepareStatement(CHAR_REP_COA_REWARD,
-        "INSERT INTO `coa_season_reward` (`season`, `id`, `type`, `target`, `preview`, `count`, `cost`, "
-        "`min_tier`, `enabled`, `display_order`, `name`, `category`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
-        "?, ?, ?) ON DUPLICATE KEY UPDATE `type` = VALUES(`type`), `target` = VALUES(`target`), `preview` "
-        "= VALUES(`preview`), `count` = VALUES(`count`), `cost` = VALUES(`cost`), `min_tier` = "
-        "VALUES(`min_tier`), `enabled` = VALUES(`enabled`), `display_order` = VALUES(`display_order`), "
-        "`name` = VALUES(`name`), `category` = VALUES(`category`)", CONNECTION_ASYNC);
+        "INSERT INTO `coa_season_account` (`season`, `account`, `points`, `mask`) VALUES (?, ?, ?, ?) ON "
+        "DUPLICATE KEY UPDATE `points` = VALUES(`points`), `mask` = VALUES(`mask`)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_REP_COA_LOCKOUT,
         "INSERT INTO `coa_season_daily_kill` (`season`, `account`, `entry`, `last_time`) VALUES (?, ?, ?, "
         "?) ON DUPLICATE KEY UPDATE `last_time` = VALUES(`last_time`)", CONNECTION_ASYNC);
@@ -766,12 +760,14 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "DELETE FROM `coa_season_account` WHERE `season` = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_COA_LOCKOUTS,
         "DELETE FROM `coa_season_daily_kill` WHERE `season` = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_COA_TIER_GRANTS,
+        "DELETE FROM `coa_season_tier_grant` WHERE `season` = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_INS_COA_REQUEST,
         "INSERT INTO `coa_season_request` (`account`, `request_id`, `payload`, `response`, `created`) "
         "VALUES (?, ?, ?, ?, ?)", CONNECTION_ASYNC);
-    PrepareStatement(CHAR_INS_COA_PURCHASE,
-        "INSERT INTO `coa_season_purchase` (`season`, `account`, `character_guid`, `reward`, `type`, "
-        "`target`, `count`, `cost`, `request_id`, `created`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_COA_TIER_GRANT,
+        "INSERT INTO `coa_season_tier_grant` (`season`, `account`, `tier`, `character_guid`, `type`, "
+        "`target`, `count`, `created`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_INS_COA_AUDIT,
         "INSERT INTO `coa_season_audit` (`season`, `account`, `action`, `created`) VALUES (?, ?, ?, ?)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_COA_HISTORY,
