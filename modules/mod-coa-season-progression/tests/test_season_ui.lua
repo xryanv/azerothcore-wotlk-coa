@@ -7,38 +7,54 @@ SlashCmdList = {}
 dofile(root .. "Protocol.lua")
 dofile(root .. "SeasonUI.lua")
 local A = CoASeason
-local tiers = {{threshold=100,points=25},{threshold=250,points=40},{threshold=500,points=60},
-    {threshold=900,points=90},{threshold=1400,points=125},{threshold=2100,points=175},{threshold=3000,points=250}}
+
+local tiers = {}
+for i=1,7 do
+    tiers[i] = {threshold=i*100,type="appearance",target=1000+i,preview=1000+i,count=1,
+        name="Reward "..i,completed=i<=2}
+end
 assert(A.TierComplete(5,1) and not A.TierComplete(5,2) and A.TierComplete(5,3))
 assert(A.ProgressPercent(0,tiers) == 0)
 assert(math.abs(A.ProgressPercent(50,tiers) - 100/14) < 0.001)
-assert(A.ProgressPercent(3000,tiers) == 100)
-local reward={enabled=true,owned=false,minTier=2,cost=40,type="appearance"}
-assert(not A.CanBuy(reward,{status="active",mask=1,points=100}))
-assert(A.CanBuy(reward,{status="active",mask=3,points=100}))
-reward.owned=true
-assert(not A.CanBuy(reward,{status="active",mask=3,points=100}))
-reward.owned=false
-assert(not A.CanBuy(reward,{status="draft",mask=127,points=100}))
-local complete,hidden
-local node = {UnlockedBorder={SetShown=function(_,v)complete=v end},
-    RewardOverlay={SetShown=function(_,v)hidden=not v end,Text={SetText=function() end}},
-    Selected={Hide=function() end},MetalBorder={SetVertexColor=function() end},
-    SetEnabled=function()end,Locked={Hide=function()end}}
-A.PaintTier(node, {points=25}, true)
-assert(node.Complete and complete and hidden)
-A.PaintTier(node, {points=25}, false)
-assert(not node.Complete and not complete and not hidden, "rollover clears old Complete state")
-local noop=function()end
-local button={Disable=noop}
-local model={coaEditorReward={target=200},ClearModel=noop,Title={SetText=noop},
-    Header={SetText=noop},CollectButton=button,PrevButton=button,NextButton=button}
-A.state={rewards={}}
-A.UpdateModel(model,1)
-assert(model.coaEditorReward==nil, "catalog render clears stale GM preview")
+assert(A.ProgressPercent(700,tiers) == 100)
+assert(A.CanBuy == nil, "spendable Season Point purchase policy must be removed")
+
+local source = assert(io.open(root .. "SeasonUI.lua", "r")):read("*a")
+assert(not source:find('"BUY"', 1, true), "season UI must never generate BUY")
+assert(not source:find("Seasonal Points", 1, true), "old spendable-currency wording must be removed")
+
+local complete, overlayShown, overlayText
+local node = {
+    UnlockedBorder={SetShown=function(_,v) complete=v end},
+    RewardOverlay={SetShown=function(_,v) overlayShown=v end,Text={SetText=function(_,v) overlayText=v end}},
+    Selected={Hide=function() end}, MetalBorder={SetVertexColor=function() end},
+    SetEnabled=function() end, Locked={Hide=function() end}
+}
+A.PaintTier(node, tiers[1], true)
+assert(node.Complete and complete and not overlayShown and overlayText == "100", "completed tier paints cumulative threshold")
+A.PaintTier(node, tiers[1], false)
+assert(not node.Complete and not complete and overlayShown and overlayText == "100", "locked tier keeps threshold visible")
+
+local values = {}
+local function textSlot(key) return {SetText=function(_,v) values[key]=v end} end
+local button = {Disable=function(self) self.disabled=true end, SetEnabled=function(self,v) self.enabled=v end,
+    SetText=function(self,v) self.text=v end, Hide=function(self) self.hidden=true end}
+local model = {
+    coaEditorReward={target=999}, ClearModel=function() end, ResetValues=function() end, SetCamera=function() end,
+    Title=textSlot("title"), Header=textSlot("header"), CollectButton=button, PrevButton=button, NextButton=button
+}
+A.ShowPreview = function(m,reward) m.previewed=reward.target; m.Title:SetText(reward.name); return true end
+A.state={season=1,revision=2,name="Test",points=150,mask=1,admin=false,status="active",tiers=tiers,settings={}}
+A.UpdateModel(model, 1)
+assert(model.previewed == 1001 and values.title == "Reward 1", "selected tier previews assigned reward")
+assert(values.header:find("Earned",1,true), "completed tier preview says earned")
+assert(button.hidden or button.enabled == false or button.disabled, "player purchase control is not actionable")
+A.UpdateModel(model, 3)
+assert(model.previewed == 1003 and values.header:find("300",1,true), "locked tier shows required cumulative points")
+
 local refreshes=0
-A.Refresh=function()refreshes=refreshes+1 end
-assert(type(A.OnSeasonFrameShow)=="function", "season frame has an authoritative reopen handler")
+A.Refresh=function() refreshes=refreshes+1 end
+assert(type(A.OnSeasonFrameShow)=="function", "season frame has authoritative reopen handler")
 A.OnSeasonFrameShow()
-assert(refreshes==1, "reopening the native season frame fetches authoritative state")
-print("PASS season UI rules and rollover visuals")
+assert(refreshes==1, "reopening native season frame fetches authoritative state")
+print("PASS season UI cumulative tier reward rules")

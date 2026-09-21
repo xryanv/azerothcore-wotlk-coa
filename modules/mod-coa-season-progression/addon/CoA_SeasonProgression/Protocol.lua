@@ -10,9 +10,10 @@ local function clientNonce()
     CoASeasonSaved.clientNonce = tostring(hash)
     return CoASeasonSaved.clientNonce
 end
+
 CoASeasonSaved.session = ((tonumber(CoASeasonSaved.session) or 0) % 999999) + 1
-CoASeason = { prefix = "COASEASON", pending = {}, listeners = {}, queue = {}, serial = 0,
-    clientNonce = clientNonce(), session = CoASeasonSaved.session }
+CoASeason = {prefix="COASEASON", pending={}, listeners={}, queue={}, serial=0,
+    clientNonce=clientNonce(), session=CoASeasonSaved.session}
 local A = CoASeason
 local MAX = 4294967295
 A.settingKeys = {"quest","level","elite","rare","rare_elite","dungeon","heroic","raid","world","level_tokens",
@@ -20,10 +21,11 @@ A.settingKeys = {"quest","level","elite","rare","rare_elite","dungeon","heroic",
     "raid_min","raid_max","raid_chance","world_min","world_max","world_chance","lockout_enabled","lockout_seconds"}
 A.settingKeySet = {}
 for _, key in ipairs(A.settingKeys) do A.settingKeySet[key] = true end
-local reads = { LIST=true, BROWSE=true, ACCOUNT=true, HISTORY=true, GET=true }
+local reads = {LIST=true, ACCOUNT=true, HISTORY=true, GET=true}
 local function isMutation(request)
-    return request and (request.operation == "BUY" or (request.operation == "ADMIN" and not reads[request.action]))
+    return request and request.operation == "ADMIN" and not reads[request.action]
 end
+
 function A.Encode(value)
     return (tostring(value):gsub("([^%w %-%._])", function(c) return string.format("%%%02X", string.byte(c)) end))
 end
@@ -50,17 +52,22 @@ function A.Notify(kind, value)
     for _, listener in ipairs(A.listeners) do listener(kind, value) end
 end
 function A.Request(operation, ...)
+    if operation ~= "GET" and operation ~= "ADMIN" then
+        A.Notify("error", "Unsupported season request.")
+        return nil
+    end
     if #A.queue >= 16 then A.Notify("error", "Too many requests. Please wait."); return nil end
     A.serial = A.serial + 1
     local id = "c" .. A.clientNonce .. "_" .. A.session .. "_" .. A.serial
-    local fields = { "1", id, operation, ... }
+    local fields = {"1", id, operation, ...}
     for i, value in ipairs(fields) do fields[i] = tostring(value) end
     local message = table.concat(fields, "|")
     if #A.prefix + #message + 1 > 255 then
-        A.Notify("error", "This request is too long."); return nil
+        A.Notify("error", "This request is too long.")
+        return nil
     end
-    A.pending[id] = { time = GetTime(), operation = operation, action = select(1, ...) }
-    A.queue[#A.queue + 1] = { id = id, message = message }
+    A.pending[id] = {time=GetTime(), operation=operation, action=select(1, ...)}
+    A.queue[#A.queue + 1] = {id=id, message=message}
     return id
 end
 function A.Refresh(season)
@@ -82,6 +89,10 @@ local function numeric(fields, positions)
     end
     return true
 end
+local function validTierType(value)
+    return value == "" or value == "appearance" or value == "vanity" or value == "item"
+end
+
 function A.Receive(message, sender)
     if sender ~= UnitName("player") or type(message) ~= "string" or #message > 245 then return end
     local f = split(message)
@@ -105,38 +116,33 @@ function A.Receive(message, sender)
         return
     end
     if kind == "BEGIN" then
-        if id ~= A.refreshId or #f ~= 11 or not numeric(f, {4,5,7,8,9,10}) then return end
+        if id ~= A.refreshId or #f ~= 10 or not numeric(f, {4,5,7,8,9}) then return end
         local name = A.Decode(f[6])
-        if not name or f[9] > 127 or f[10] > 1 then return fail(id, "Invalid season state.") end
-        request.stage = { season=f[4], revision=f[5], name=name, progress=f[7], points=f[8],
-            mask=f[9], admin=f[10] == 1, status=f[11], settings={}, tiers={}, rewards={}, keys={}, rows=0 }
+        if not name or f[8] > 127 or f[9] > 1 then return fail(id, "Invalid season state.") end
+        request.stage = {season=f[4], revision=f[5], name=name, points=f[7], mask=f[8],
+            admin=f[9] == 1, status=f[10], settings={}, tiers={}, keys={}, rows=0}
         return
     end
     if kind == "ACCOUNT" then
         if #f == 7 and numeric(f, {4,5,6,7}) then
-            A.Notify("account", {id=f[4],season=f[5],progress=f[6],points=f[7]})
+            A.Notify("account", {id=f[4], season=f[5], points=f[6], mask=f[7]})
             A.pending[id] = nil
         end
         return
     end
     if kind == "SEASON" then
         if #f == 7 and numeric(f, {4,6}) and A.Decode(f[7]) then
-            A.Notify("season", {id=f[4],status=f[5],revision=f[6],name=A.Decode(f[7])})
-        end
-        return
-    end
-    if kind == "BROWSE" then
-        if #f == 7 and numeric(f, {5,6}) and A.Decode(f[7]) then
-            A.Notify("browse", {type=f[4],target=f[5],preview=f[6],name=A.Decode(f[7])})
+            A.Notify("season", {id=f[4], status=f[5], revision=f[6], name=A.Decode(f[7])})
         end
         return
     end
     if kind == "HISTORY" then
         if #f == 6 and numeric(f, {4,5}) and A.Decode(f[6]) then
-            A.Notify("history", {time=f[4],account=f[5],action=A.Decode(f[6])})
+            A.Notify("history", {time=f[4], account=f[5], action=A.Decode(f[6])})
         end
         return
     end
+
     local s = request.stage
     if not s then return end
     if kind == "END" then
@@ -147,12 +153,10 @@ function A.Receive(message, sender)
         end
         local threshold = 0
         for i=1,7 do
-            if not s.tiers[i] or s.tiers[i].threshold <= threshold then
-                return fail(id, "Invalid season tiers.")
-            end
-            threshold = s.tiers[i].threshold
+            local tier = s.tiers[i]
+            if not tier or tier.threshold <= threshold then return fail(id, "Invalid season tiers.") end
+            threshold = tier.threshold
         end
-        table.sort(s.rewards, function(x,y) return x.order == y.order and x.id < y.id or x.order < y.order end)
         s.keys, s.rows = nil, nil
         A.state = s
         A.stale = nil
@@ -160,37 +164,39 @@ function A.Receive(message, sender)
         A.Notify("state", s)
         return
     end
+
     local key
     if kind == "SETTING" and #f == 5 then
         local n = A.Number(f[5])
         if not n or not A.settingKeySet[f[4]] then return fail(id, "Invalid season setting.") end
         key = "s" .. f[4]
         s.settings[f[4]] = n
-    elseif kind == "TIER" and #f == 6 and numeric(f, {4,5,6}) then
-        if f[4] < 1 or f[4] > 7 or f[5] == 0 then return fail(id, "Invalid tier.") end
+    elseif kind == "TIER" and #f == 11 and numeric(f, {4,5,7,8,9,11}) then
+        local name = A.Decode(f[10])
+        if not name or f[4] < 1 or f[4] > 7 or f[5] == 0 or f[11] > 1 or not validTierType(f[6]) then
+            return fail(id, "Invalid tier.")
+        end
+        if f[6] == "" then
+            if f[7] ~= 0 or f[8] ~= 0 or f[9] ~= 1 or name ~= "" then return fail(id, "Invalid unassigned tier.") end
+        elseif f[7] == 0 or f[9] == 0 or name == "" then
+            return fail(id, "Invalid tier reward.")
+        end
         key = "t" .. f[4]
-        s.tiers[f[4]] = {threshold=f[5],points=f[6]}
-    elseif kind == "REWARD" and #f == 15 and numeric(f, {4,6,7,8,9,10,11,12,15}) then
-        local name, category = A.Decode(f[13]), A.Decode(f[14])
-        if not name or not category or f[10] > 7 or f[11] > 1 or f[15] > 1 then return fail(id, "Invalid reward.") end
-        if f[5] ~= "appearance" and f[5] ~= "vanity" and f[5] ~= "item" then return fail(id, "Unknown reward type.") end
-        key = "r" .. f[4]
-        s.rewards[#s.rewards+1] = {id=f[4],type=f[5],target=f[6],preview=f[7],count=f[8],cost=f[9],
-            minTier=f[10],enabled=f[11] == 1,order=f[12],name=name,category=category,owned=f[15] == 1}
+        s.tiers[f[4]] = {threshold=f[5], type=f[6], target=f[7], preview=f[8], count=f[9],
+            name=name, completed=f[11] == 1}
     else
         return fail(id, "Malformed season snapshot.")
     end
-    if s.keys[key] or s.rows >= 512 then return fail(id, "Duplicate or oversized season snapshot.") end
+    if s.keys[key] or s.rows >= 64 then return fail(id, "Duplicate or oversized season snapshot.") end
     s.keys[key], s.rows = true, s.rows + 1
 end
+
 function A.Tick(elapsed)
     A.throttle = (A.throttle or 0) + elapsed
     if A.throttle >= 0.3 and #A.queue > 0 then
         A.throttle = 0
         local entry = table.remove(A.queue, 1)
-        if A.pending[entry.id] then
-            SendAddonMessage(A.prefix, entry.message, "WHISPER", UnitName("player"))
-        end
+        if A.pending[entry.id] then SendAddonMessage(A.prefix, entry.message, "WHISPER", UnitName("player")) end
     end
     local expired = {}
     for id, request in pairs(A.pending) do
@@ -198,6 +204,7 @@ function A.Tick(elapsed)
     end
     for _, id in ipairs(expired) do fail(id, "Season request timed out. Refresh to check its result.") end
 end
+
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PLAYER_LOGIN")
