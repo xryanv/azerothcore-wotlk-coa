@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: CoA Season Progression
+## Notes: Account season progress and GM administration using Ascension previews.
+## Author: CoA Local Realm
+## Version: 1.0.0
+Protocol.lua
+SeasonUI.lua
+AdminUI.lua
