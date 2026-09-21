@@ -12,6 +12,8 @@ function methods:Disable()self.disabled=true end
 function methods:CreateFontString()return CreateFrame("FontString")end
 function methods:SetEnabled(enabled)self.disabled=not enabled end
 function methods:SetShown(show)self.shown=show end
+function methods:SetSize(w,h)self.width=w;self.height=h end
+function methods:SetPoint(...)self.point={...}end
 function CreateFrame(kind,name,parent,template)
     local f={kind=kind,name=name,parent=parent,template=template,scripts={},shown=true,disabled=false}
     setmetatable(f,{__index=function(_,key)return methods[key] or function()end end})
@@ -42,6 +44,10 @@ assert(#requests==0,"ordinary account cannot open or request GM data")
 A.state.admin=true
 A.ShowAdmin()
 assert(not SeasonCollectionFrame.shown,"opening standalone admin hides native season frame")
+assert(CoASeasonAdminFrame.height and CoASeasonAdminFrame.height <= 580,
+    "admin frame fits the 1264x692 acceptance window vertically")
+assert(CoASeasonAdminFrame.point and CoASeasonAdminFrame.point[1] == "CENTER",
+    "admin frame uses resolution-safe centered anchoring")
 assert(requests[1][1]=="ADMIN" and requests[1][2]=="LIST")
 
 local labels={}
@@ -52,6 +58,8 @@ assert(labels["Edit Tier Rewards"],"native tier reward editor entry exists")
 assert(labels["Assign item ID"],"physical-item fallback is a single validated-ID action")
 local source=assert(io.open(root.."AdminUI.lua","r")):read("*a")
 assert(not source:find('"BROWSE"',1,true) and not source:find("Save reward",1,true),"custom reward catalog/editor removed")
+assert(not source:find("Tier points",1,true) and not source:find("Seasonal Point cost",1,true),
+    "no tier payout or spendable-point cost controls remain")
 
 local function click(label)
     for _,f in ipairs(frames)do

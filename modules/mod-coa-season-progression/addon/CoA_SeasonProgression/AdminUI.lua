@@ -214,7 +214,7 @@ function A.ShowAdmin()
     if SeasonCollectionFrame and SeasonCollectionFrame:IsShown() then SeasonCollectionFrame:Hide() end
     if not UI.frame then
         local frame=CreateFrame("Frame","CoASeasonAdminFrame",UIParent)
-        frame:SetSize(530,630); frame:SetPoint("TOPLEFT",UIParent,"TOPLEFT",20,-90)
+        frame:SetSize(530,560); frame:SetPoint("CENTER",UIParent,"CENTER",0,0)
         frame:SetFrameStrata("DIALOG"); frame:SetMovable(true); frame:EnableMouse(true)
         frame:RegisterForDrag("LeftButton")
         frame:SetScript("OnDragStart",frame.StartMoving); frame:SetScript("OnDragStop",frame.StopMovingOrSizing)
