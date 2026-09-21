@@ -724,6 +724,10 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_SEL_COA_TIER_GRANT,
         "SELECT 1 AS valid, `type`, `target`, `count` FROM `coa_season_tier_grant` WHERE `season` = ? AND "
         "`account` = ? AND `tier` = ? UNION ALL SELECT 0, NULL, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_ACCOUNT_CHARACTER,
+        "SELECT 1 AS valid, `guid` FROM (SELECT `guid`, `online`, `level` FROM `characters` WHERE `account` "
+        "= ? AND `deleteDate` IS NULL ORDER BY `online` DESC, `level` DESC, `guid` ASC LIMIT 1) AS `c` "
+        "UNION ALL SELECT 0, NULL", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_COA_LOCKOUTS,
         "SELECT 1 AS valid, `season`, `account`, `entry`, `last_time` FROM `coa_season_daily_kill` UNION "
         "ALL SELECT 0, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
@@ -781,7 +785,7 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "SELECT 1 AS valid, `appearance_id` FROM `account_appearance_collection` WHERE `account_id` = ? "
         "UNION ALL SELECT 0, NULL", CONNECTION_ASYNC);
     PrepareStatement(CHAR_INS_COA_APPEARANCE,
-        "INSERT INTO `account_appearance_collection` (`account_id`, `appearance_id`, `source_item`) "
+        "INSERT IGNORE INTO `account_appearance_collection` (`account_id`, `appearance_id`, `source_item`) "
         "VALUES (?, ?, 0)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_COA_VANITY,
         "SELECT EXISTS (SELECT 1 FROM `account_vanity_collection` WHERE `account_id` = ? AND `item_id` = "
@@ -790,7 +794,7 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "SELECT 1 AS valid, `item_id` FROM `account_vanity_collection` WHERE `account_id` = ? UNION ALL "
         "SELECT 0, NULL", CONNECTION_ASYNC);
     PrepareStatement(CHAR_INS_COA_VANITY,
-        "INSERT INTO `account_vanity_collection` (`account_id`, `item_id`) VALUES (?, ?)", CONNECTION_ASYNC);
+        "INSERT IGNORE INTO `account_vanity_collection` (`account_id`, `item_id`) VALUES (?, ?)", CONNECTION_ASYNC);
 
     PrepareStatement(CHAR_INS_PLAYER_ANTICHEAT_ALERT, "INSERT INTO player_anticheat_alert (account, guid, name, reason, details, size) VALUES (?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
 }

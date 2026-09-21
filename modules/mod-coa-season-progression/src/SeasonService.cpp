@@ -3,7 +3,6 @@
 #include "SeasonRules.h"
 #include "SeasonSettings.h"
 #include "SeasonRequestRules.h"
-#include "SeasonRewardRules.h"
 #include "../../mod-ascension-compat/src/AscensionSeasonCollection.h"
 #include "AsyncCallbackProcessor.h"
 #include "Chat.h"
@@ -44,42 +43,34 @@ uint64 Now()
     return static_cast<uint64>(GameTime::GetGameTime().count());
 }
 
-struct Reward
+struct TierReward
 {
-    uint32 id = 0;
     std::string type;
     uint32 target = 0;
     uint32 preview = 0;
     uint32 count = 1;
-    uint32 cost = 0;
-    uint32 minimumTier = 0;
-    uint32 enabled = 1;
-    uint32 order = 0;
     std::string name;
-    std::string category;
+
+    bool Assigned() const { return target != 0; }
 };
 
-std::string RewardRow(Reward const& reward, bool owned)
+bool ValidTierReward(TierReward const& reward)
 {
-    return "REWARD|" + std::to_string(reward.id) + "|" + reward.type + "|" +
-        std::to_string(reward.target) + "|" + std::to_string(reward.preview) + "|" +
-        std::to_string(reward.count) + "|" + std::to_string(reward.cost) + "|" +
-        std::to_string(reward.minimumTier) + "|" + std::to_string(reward.enabled) + "|" +
-        std::to_string(reward.order) + "|" + Encode(reward.name) + "|" + Encode(reward.category) + "|" +
-        (owned ? "1" : "0");
-}
-
-bool ValidReward(Reward const& reward)
-{
-    if (!reward.id || reward.name.empty() || reward.name.size() > 48 || reward.category.size() > 24 ||
-        reward.minimumTier > 7 || reward.enabled > 1 || !reward.count || reward.count > 1000 ||
-        RewardRow(reward, false).size() + 35 > MaxPayloadBytes ||
+    if (!reward.Assigned() || reward.name.empty() || reward.name.size() > 48 ||
+        Encode(reward.name).size() > 120 || !reward.count || reward.count > 1000 ||
         !AscensionSeasonCollection::Validate(reward.type, reward.target, reward.preview))
         return false;
     if (reward.type != "item")
         return reward.count == 1;
     ItemTemplate const* item = sObjectMgr->GetItemTemplate(reward.target);
     return item && reward.count <= uint64(item->GetMaxStackSize()) * MAX_MAIL_ITEMS;
+}
+
+std::string TierRow(uint32 index, Tier const& tier, TierReward const& reward, bool completed)
+{
+    return "TIER|" + std::to_string(index) + "|" + std::to_string(tier.threshold) + "|" + reward.type +
+        "|" + std::to_string(reward.target) + "|" + std::to_string(reward.preview) + "|" +
+        std::to_string(reward.count) + "|" + Encode(reward.name) + "|" + (completed ? "1" : "0");
 }
 
 struct Season
@@ -92,8 +83,22 @@ struct Season
     uint64 activated = 0;
     Settings settings = DefaultSettings();
     std::array<Tier, 7> tiers = DefaultTiers;
-    std::map<uint32, Reward> rewards;
+    std::array<TierReward, 7> rewards{};
 };
+
+bool AllRewardsValid(Season const& season)
+{
+    return std::all_of(season.rewards.begin(), season.rewards.end(),
+        [](TierReward const& reward) { return ValidTierReward(reward); });
+}
+
+bool NeedsCharacter(Season const& season, uint32 bits)
+{
+    for (uint32 i = 0; i < season.rewards.size(); ++i)
+        if ((bits & (uint32{1} << i)) && season.rewards[i].type == "item")
+            return true;
+    return false;
+}
 
 struct RequestContext
 {
@@ -125,8 +130,7 @@ CharacterDatabasePreparedStatement* Statement(CharacterDatabaseStatements id, Va
 
 void SaveAccount(CharacterDatabaseTransaction const& transaction, AccountKey key, Account const& account)
 {
-    transaction->Append(Statement(CHAR_REP_COA_ACCOUNT, key.first, key.second, account.progress,
-        account.points, account.earned, account.spent, account.mask));
+    transaction->Append(Statement(CHAR_REP_COA_ACCOUNT, key.first, key.second, account.points, account.mask));
 }
 
 void SaveSeason(CharacterDatabaseTransaction const& transaction, Season const& season)
@@ -136,14 +140,12 @@ void SaveSeason(CharacterDatabaseTransaction const& transaction, Season const& s
     for (auto const& [key, value] : season.settings)
         transaction->Append(Statement(CHAR_REP_COA_SETTING, season.id, key, value));
     for (uint32 i = 0; i < season.tiers.size(); ++i)
-        transaction->Append(Statement(CHAR_REP_COA_TIER, season.id, i + 1,
-            season.tiers[i].threshold, season.tiers[i].points));
-    for (auto const& [id, reward] : season.rewards)
     {
-        (void)id;
-        transaction->Append(Statement(CHAR_REP_COA_REWARD, season.id, reward.id, reward.type, reward.target,
-            reward.preview, reward.count, reward.cost, reward.minimumTier, reward.enabled, reward.order,
-            reward.name, reward.category));
+        transaction->Append(Statement(CHAR_REP_COA_TIER, season.id, i + 1, season.tiers[i].threshold));
+        TierReward const& reward = season.rewards[i];
+        if (reward.Assigned())
+            transaction->Append(Statement(CHAR_REP_COA_TIER_REWARD, season.id, i + 1, reward.type,
+                reward.target, reward.preview, reward.count, reward.name));
     }
 }
 }
@@ -211,63 +213,10 @@ struct Service::Impl
     void Admin(RequestContext const& request);
     void BootstrapSnapshot(RequestContext const& request);
     void Snapshot(RequestContext const& request, uint32 seasonId);
-    void Buy(RequestContext const& request);
     void AwardProgress(Award const& award);
     void Load(bool enabled);
-
-    void ReadOwnership(uint32 season, uint32 account,
-        std::function<void(bool, std::set<uint32>, std::set<uint32>, std::set<uint32>)> callback)
-    {
-        queries.AddCallback(CharacterDatabase.AsyncQuery(Statement(CHAR_SEL_COA_APPEARANCES, account))
-            .WithPreparedCallback([this, season, account, callback](PreparedQueryResult result)
-        {
-            if (!result)
-            {
-                callback(false, {}, {}, {});
-                return;
-            }
-            std::set<uint32> appearances;
-            do
-            {
-                Field* fields = result->Fetch();
-                if (fields[0].Get<uint32>())
-                    appearances.insert(fields[1].Get<uint32>());
-            } while (result->NextRow());
-            queries.AddCallback(CharacterDatabase.AsyncQuery(Statement(CHAR_SEL_COA_VANITIES, account))
-                .WithPreparedCallback([this, season, account, callback, appearances](PreparedQueryResult vanity)
-            {
-                if (!vanity)
-                {
-                    callback(false, {}, {}, {});
-                    return;
-                }
-                std::set<uint32> vanities;
-                do
-                {
-                    Field* fields = vanity->Fetch();
-                    if (fields[0].Get<uint32>())
-                        vanities.insert(fields[1].Get<uint32>());
-                } while (vanity->NextRow());
-                queries.AddCallback(CharacterDatabase.AsyncQuery(Statement(CHAR_SEL_COA_PURCHASES, season, account))
-                    .WithPreparedCallback([callback, appearances, vanities](PreparedQueryResult purchase)
-                {
-                    if (!purchase)
-                    {
-                        callback(false, {}, {}, {});
-                        return;
-                    }
-                    std::set<uint32> purchases;
-                    do
-                    {
-                        Field* fields = purchase->Fetch();
-                        if (fields[0].Get<uint32>())
-                            purchases.insert(fields[1].Get<uint32>());
-                    } while (purchase->NextRow());
-                    callback(true, appearances, vanities, purchases);
-                }));
-            }));
-        }));
-    }
+    void ResolveCharacter(uint32 account, std::function<void(uint32)> callback);
+    void ReconcileAccounts(RequestContext const& request, Season const& updated, std::string const& action);
 
     void Commit(CharacterDatabaseTransaction const& transaction, RequestContext const* request,
         uint32 seasonId, std::string const& action, std::function<void()> success, uint32 auditAccount = 0)
@@ -356,6 +305,42 @@ struct Service::Impl
         return true;
     }
 
+    bool AppendTierGrants(CharacterDatabaseTransaction const& transaction, Season const& season,
+        AccountKey key, uint32 bits, uint32 character, ObjectGuid guid,
+        std::vector<std::shared_ptr<MailDelivery>>& deliveries)
+    {
+        if (!bits)
+            return true;
+        if (guid.IsEmpty() && character)
+            guid = ObjectGuid::Create<HighGuid::Player>(character);
+        for (uint32 i = 0; i < season.rewards.size(); ++i)
+        {
+            uint32 bit = uint32{1} << i;
+            if (!(bits & bit))
+                continue;
+            TierReward const& reward = season.rewards[i];
+            if (!ValidTierReward(reward))
+                return false;
+            if (reward.type == "item" && !character)
+                return false;
+            transaction->Append(Statement(CHAR_INS_COA_TIER_GRANT, season.id, key.second, i + 1,
+                character, reward.type, reward.target, reward.count, Now()));
+            transaction->Append(Statement(CHAR_INS_COA_AUDIT, season.id, key.second,
+                "Grant tier " + std::to_string(i + 1) + " reward " + reward.name, Now()));
+            if (reward.type == "appearance")
+                transaction->Append(Statement(CHAR_INS_COA_APPEARANCE, key.second, reward.target));
+            else if (reward.type == "vanity")
+                transaction->Append(Statement(CHAR_INS_COA_VANITY, key.second, reward.target));
+            else
+            {
+                Award recipient{key.second, guid, character, 0, "tier", 0, false};
+                if (!MakeMail(transaction, recipient, reward.target, reward.count, deliveries))
+                    return false;
+            }
+        }
+        return true;
+    }
+
     void PublishMail(std::vector<std::shared_ptr<MailDelivery>> const& deliveries)
     {
         // Database mail is already committed; only now may live objects/notifications be published.
@@ -395,22 +380,33 @@ void Service::Impl::Load(bool enabled)
 void Service::Impl::LoadStep(uint32 step)
 {
     static CharacterDatabaseStatements const statements[] = {CHAR_SEL_COA_SCHEMA, CHAR_SEL_COA_SEASONS,
-        CHAR_SEL_COA_SETTINGS, CHAR_SEL_COA_TIERS, CHAR_SEL_COA_ACCOUNTS, CHAR_SEL_COA_REWARDS,
+        CHAR_SEL_COA_SETTINGS, CHAR_SEL_COA_TIERS, CHAR_SEL_COA_TIER_REWARDS, CHAR_SEL_COA_ACCOUNTS,
         CHAR_SEL_COA_LOCKOUTS, CHAR_SEL_COA_LEVELS};
     if (step == std::size(statements))
     {
         for (auto const& [id, season] : seasons)
         {
             Account validation;
-            if (!id || !season.revision || season.name.empty() || season.rewards.size() > 128 ||
-                !ValidSettings(season.settings) || !Reconcile(validation, season.tiers))
+            if (!id || !season.revision || season.name.empty() || !ValidSettings(season.settings) ||
+                !Reconcile(validation, season.tiers))
             {
                 FailLoad();
                 return;
             }
+            bool allRewards = true;
+            for (TierReward const& reward : season.rewards)
+            {
+                if (!reward.Assigned())
+                    allRewards = false;
+                else if (!ValidTierReward(reward))
+                {
+                    FailLoad();
+                    return;
+                }
+            }
             if (season.status == "active")
             {
-                if (active)
+                if (active || !allRewards)
                 {
                     FailLoad();
                     return;
@@ -422,14 +418,16 @@ void Service::Impl::LoadStep(uint32 step)
                 FailLoad();
                 return;
             }
-            for (auto const& [rewardId, reward] : season.rewards)
+        }
+        for (auto const& [key, account] : accounts)
+        {
+            auto season = seasons.find(key.first);
+            Account validation = account;
+            if (season == seasons.end() || (account.mask & ~uint32{0x7F}) ||
+                !Reconcile(validation, season->second.tiers))
             {
-                (void)rewardId;
-                if (!ValidReward(reward))
-                {
-                    FailLoad();
-                    return;
-                }
+                FailLoad();
+                return;
             }
         }
         ready.store(true);
@@ -470,9 +468,9 @@ void Service::Impl::LoadStep(uint32 step)
                         season.revision = f[4].Get<uint32>();
                         season.created = f[5].Get<uint64>();
                         season.activated = f[6].Get<uint64>();
-                        // Missing configuration is invalid, never silently default existing DB records.
                         season.settings.clear();
                         season.tiers = {};
+                        season.rewards = {};
                         seasons[id] = std::move(season);
                         break;
                     }
@@ -487,22 +485,24 @@ void Service::Impl::LoadStep(uint32 step)
                             FailLoad();
                             return;
                         }
-                        seasons.at(id).tiers[tier - 1] = {f[3].Get<uint32>(), f[4].Get<uint32>()};
+                        seasons.at(id).tiers[tier - 1] = {f[3].Get<uint32>()};
                         break;
                     }
                     case 4:
-                        accounts[{id, f[2].Get<uint32>()}] = {f[3].Get<uint32>(), f[4].Get<uint32>(),
-                            f[5].Get<uint32>(), f[6].Get<uint32>(), f[7].Get<uint32>()};
-                        break;
-                    case 5:
                     {
-                        Reward reward{f[2].Get<uint32>(), f[3].Get<std::string>(), f[4].Get<uint32>(),
-                            f[5].Get<uint32>(), f[6].Get<uint32>(), f[7].Get<uint32>(), f[8].Get<uint32>(),
-                            f[9].Get<uint32>(), f[10].Get<uint32>(), f[11].Get<std::string>(),
-                            f[12].Get<std::string>()};
-                        seasons.at(id).rewards[reward.id] = std::move(reward);
+                        uint32 tier = f[2].Get<uint32>();
+                        if (!tier || tier > 7)
+                        {
+                            FailLoad();
+                            return;
+                        }
+                        seasons.at(id).rewards[tier - 1] = {f[3].Get<std::string>(), f[4].Get<uint32>(),
+                            f[5].Get<uint32>(), f[6].Get<uint32>(), f[7].Get<std::string>()};
                         break;
                     }
+                    case 5:
+                        accounts[{id, f[2].Get<uint32>()}] = {f[3].Get<uint32>(), f[4].Get<uint32>()};
+                        break;
                     case 6:
                         kills[{id, f[2].Get<uint32>(), f[3].Get<uint32>()}] = f[4].Get<uint64>();
                         break;
@@ -544,11 +544,6 @@ void Service::Impl::Handle(RequestContext request)
                 BootstrapSnapshot(context);
             else
                 Snapshot(context, active);
-            return;
-        }
-        if (context.fields[2] == "BUY")
-        {
-            Buy(context);
             return;
         }
         Admin(context);
@@ -597,6 +592,140 @@ void Service::Impl::Handle(RequestContext request)
     }));
 }
 
+void Service::Impl::ResolveCharacter(uint32 account, std::function<void(uint32)> callback)
+{
+    queries.AddCallback(CharacterDatabase.AsyncQuery(Statement(CHAR_SEL_COA_ACCOUNT_CHARACTER, account))
+        .WithPreparedCallback([callback](PreparedQueryResult result)
+    {
+        if (!result)
+        {
+            callback(0);
+            return;
+        }
+        uint32 character = 0;
+        do
+        {
+            Field* fields = result->Fetch();
+            if (fields[0].Get<uint32>())
+            {
+                character = fields[1].Get<uint32>();
+                break;
+            }
+        } while (result->NextRow());
+        callback(character);
+    }));
+}
+
+void Service::Impl::ReconcileAccounts(RequestContext const& request, Season const& updated,
+    std::string const& action)
+{
+    if (updated.status != "active")
+    {
+        auto transaction = CharacterDatabase.BeginTransaction();
+        SaveSeason(transaction, updated);
+        Commit(transaction, &request, updated.id, action,
+            [this, updated] { seasons[updated.id] = updated; Invalidate(); });
+        return;
+    }
+
+    struct Work
+    {
+        AccountKey key;
+        Account account;
+        uint32 bits = 0;
+        uint32 character = 0;
+        ObjectGuid guid;
+    };
+    auto work = std::make_shared<std::vector<Work>>();
+    for (auto const& [key, account] : accounts)
+    {
+        if (key.first != updated.id)
+            continue;
+        Account next = account;
+        if (!Reconcile(next, updated.tiers))
+        {
+            Error(request, "Tier thresholds are invalid.");
+            return;
+        }
+        uint32 bits = NewlyCompleted(account, next);
+        if (bits)
+            work->push_back({key, next, bits, 0, ObjectGuid::Empty});
+    }
+
+    auto finish = [this, request, updated, action, work]
+    {
+        auto transaction = CharacterDatabase.BeginTransaction();
+        SaveSeason(transaction, updated);
+        std::vector<std::shared_ptr<MailDelivery>> deliveries;
+        for (Work const& entry : *work)
+        {
+            SaveAccount(transaction, entry.key, entry.account);
+            if (!AppendTierGrants(transaction, updated, entry.key, entry.bits, entry.character, entry.guid, deliveries))
+            {
+                Error(request, "Could not prepare newly completed tier rewards.");
+                return;
+            }
+        }
+        Commit(transaction, &request, updated.id, action,
+            [this, updated, work, deliveries]
+        {
+            seasons[updated.id] = updated;
+            for (Work const& entry : *work)
+            {
+                accounts[entry.key] = entry.account;
+                if (entry.bits)
+                    AscensionSeasonCollection::Refresh(entry.key.second);
+            }
+            PublishMail(deliveries);
+            Invalidate();
+        });
+    };
+
+    auto resolve = std::make_shared<std::function<void(std::size_t)>>();
+    *resolve = [this, request, updated, work, finish, resolve](std::size_t index)
+    {
+        if (index >= work->size())
+        {
+            finish();
+            return;
+        }
+        Work& entry = (*work)[index];
+        if (!NeedsCharacter(updated, entry.bits))
+        {
+            (*resolve)(index + 1);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            for (auto const& [guid, session] : sessions)
+                if (session.first == entry.key.second)
+                {
+                    entry.guid = guid;
+                    entry.character = guid.GetCounter();
+                    break;
+                }
+        }
+        if (entry.character)
+        {
+            (*resolve)(index + 1);
+            return;
+        }
+        ResolveCharacter(entry.key.second, [this, request, work, resolve, index](uint32 character)
+        {
+            if (!character)
+            {
+                Error(request, "A completed physical tier reward has no eligible character recipient.");
+                return;
+            }
+            Work& resolved = (*work)[index];
+            resolved.character = character;
+            resolved.guid = ObjectGuid::Create<HighGuid::Player>(character);
+            (*resolve)(index + 1);
+        });
+    };
+    (*resolve)(0);
+}
+
 void Service::Impl::Admin(RequestContext const& request)
 {
     std::string const& action = request.fields[3];
@@ -617,19 +746,6 @@ void Service::Impl::Admin(RequestContext const& request)
         Snapshot(request, seasonId);
         return;
     }
-    if (action == "BROWSE")
-    {
-        std::string search;
-        uint32 offset = 0;
-        if (!Decode(request.fields[4], search, 80) || !Number(request.fields[5], offset) || offset > 100000)
-            return Error(request, "Invalid reward search.");
-        for (AscensionSeasonCollection::Entry const& entry : AscensionSeasonCollection::Browse("", search, offset))
-            Send(request.guid, request.Id(), "BROWSE|" + entry.Type + "|" + std::to_string(entry.Target) + "|" +
-                std::to_string(entry.PreviewItem) + "|" + Encode(entry.Name));
-        Send(request.guid, request.Id(), "OK|Listed");
-        busy = false;
-        return;
-    }
     if (action == "ACCOUNT")
     {
         uint32 accountId = 0;
@@ -640,7 +756,7 @@ void Service::Impl::Admin(RequestContext const& request)
             if (auto found = accounts.find({active, accountId}); found != accounts.end())
                 account = found->second;
         Send(request.guid, request.Id(), "ACCOUNT|" + std::to_string(accountId) + "|" +
-            std::to_string(active) + "|" + std::to_string(account.progress) + "|" + std::to_string(account.points));
+            std::to_string(active) + "|" + std::to_string(account.points) + "|" + std::to_string(account.mask));
         busy = false;
         return;
     }
@@ -713,22 +829,72 @@ void Service::Impl::Admin(RequestContext const& request)
             !Decode(request.fields[8], reason, 48) || reason.empty() || Encode(reason).size() > 120)
             return Error(request, "Invalid account adjustment.");
         AccountKey const key{seasonId, accountId};
-        Account account;
+        Account before;
         if (auto found = accounts.find(key); found != accounts.end())
-            account = found->second;
-        if (!Adjust(account, amount))
-            return Error(request, "Point adjustment would underflow or overflow.");
-        auto transaction = CharacterDatabase.BeginTransaction();
-        SaveAccount(transaction, key, account);
-        Commit(transaction, &request, seasonId,
-            "Adjust account " + std::to_string(accountId) + " by " + std::to_string(amount) + ": " + reason,
-            [this, key, account, accountId, seasonId, request]
+            before = found->second;
+        Account adjusted = before;
+        if (!AdjustPoints(adjusted, amount) || !Reconcile(adjusted, seasonItr->second.tiers))
+            return Error(request, "Point adjustment would underflow, overflow, or violate tier settings.");
+        uint32 bits = NewlyCompleted(before, adjusted);
+        Season season = seasonItr->second;
+
+        auto save = [this, request, key, before, adjusted, bits, season, accountId, amount, reason]
+            (uint32 character, ObjectGuid guid)
         {
-            accounts[key] = account;
-            if (seasonId == active)
-                Invalidate(accountId);
-            else
-                Invalidate(request.account);
+            auto transaction = CharacterDatabase.BeginTransaction();
+            SaveAccount(transaction, key, adjusted);
+            std::vector<std::shared_ptr<MailDelivery>> deliveries;
+            if (season.status == "active" && !AppendTierGrants(transaction, season, key, bits,
+                character, guid, deliveries))
+            {
+                Error(request, "Could not prepare tier rewards for account adjustment.");
+                return;
+            }
+            Commit(transaction, &request, season.id,
+                "Adjust account " + std::to_string(accountId) + " by " + std::to_string(amount) + ": " + reason,
+                [this, key, adjusted, bits, deliveries]
+            {
+                accounts[key] = adjusted;
+                PublishMail(deliveries);
+                if (bits)
+                    AscensionSeasonCollection::Refresh(key.second);
+                Invalidate(key.second);
+            });
+        };
+
+        if (season.status != "active" || !NeedsCharacter(season, bits))
+        {
+            save(0, ObjectGuid::Empty);
+            return;
+        }
+        if (accountId == request.account)
+        {
+            save(request.character, request.guid);
+            return;
+        }
+        ObjectGuid onlineGuid;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            for (auto const& [guid, session] : sessions)
+                if (session.first == accountId)
+                {
+                    onlineGuid = guid;
+                    break;
+                }
+        }
+        if (!onlineGuid.IsEmpty())
+        {
+            save(onlineGuid.GetCounter(), onlineGuid);
+            return;
+        }
+        ResolveCharacter(accountId, [this, request, save](uint32 character)
+        {
+            if (!character)
+            {
+                Error(request, "A completed physical tier reward has no eligible character recipient.");
+                return;
+            }
+            save(character, ObjectGuid::Create<HighGuid::Player>(character));
         });
         return;
     }
@@ -760,11 +926,10 @@ void Service::Impl::Admin(RequestContext const& request)
         {
             uint32 tier = 0;
             uint32 threshold = 0;
-            uint32 points = 0;
             if (!Number(request.fields[6], tier) || !Number(request.fields[7], threshold) ||
-                !Number(request.fields[8], points) || tier < 1 || tier > 7 || !threshold)
+                tier < 1 || tier > 7 || !threshold)
                 return Error(request, "Invalid tier setting.");
-            updated.tiers[tier - 1] = {threshold, points};
+            updated.tiers[tier - 1] = {threshold};
         }
         else
         {
@@ -775,73 +940,28 @@ void Service::Impl::Admin(RequestContext const& request)
         if (!ValidSettings(updated.settings) || !Reconcile(validation, updated.tiers))
             return Error(request, "Tier thresholds must increase strictly.");
         ++updated.revision;
-
-        std::map<AccountKey, Account> reconciled;
-        for (auto const& [key, account] : accounts)
-        {
-            if (key.first != seasonId)
-                continue;
-            Account next = account;
-            if (!Reconcile(next, updated.tiers))
-                return Error(request, "Tier change would overflow an account balance.");
-            reconciled.emplace(key, next);
-        }
-        auto transaction = CharacterDatabase.BeginTransaction();
-        SaveSeason(transaction, updated);
-        for (auto const& [key, account] : reconciled)
-            SaveAccount(transaction, key, account);
-        Commit(transaction, &request, seasonId,
-            action == "RESET" ? "Reset economy and tiers to defaults" : "Update tier settings",
-            [this, updated, reconciled]
-        {
-            seasons[updated.id] = updated;
-            for (auto const& [key, account] : reconciled)
-                accounts[key] = account;
-            Invalidate();
-        });
+        ReconcileAccounts(request, updated,
+            action == "RESET" ? "Reset economy and tiers to defaults" : "Update tier threshold");
         return;
     }
 
-    if (action == "REWARD")
+    if (action == "ASSIGN")
     {
-        Reward reward;
-        if (!Number(request.fields[6], reward.id) || !Number(request.fields[8], reward.target) ||
-            !Number(request.fields[9], reward.preview) || !Number(request.fields[10], reward.count) ||
-            !Number(request.fields[11], reward.cost) || !Number(request.fields[12], reward.minimumTier) ||
-            !Number(request.fields[13], reward.enabled) || !Number(request.fields[14], reward.order) ||
-            !Decode(request.fields[15], reward.name, 48) || !Decode(request.fields[16], reward.category, 24))
-            return Error(request, "Invalid reward values.");
+        uint32 tier = 0;
+        TierReward reward;
+        if (!Number(request.fields[6], tier) || tier < 1 || tier > 7 ||
+            !Number(request.fields[8], reward.target) || !Number(request.fields[9], reward.preview) ||
+            !Number(request.fields[10], reward.count) || !Decode(request.fields[11], reward.name, 48))
+            return Error(request, "Invalid tier reward assignment.");
         reward.type = request.fields[7];
-        if (!reward.id)
-        {
-            if (updated.rewards.size() >= 128 ||
-                (!updated.rewards.empty() && updated.rewards.rbegin()->first == UINT32_MAX))
-                return Error(request, "Reward catalog is full.");
-            reward.id = updated.rewards.empty() ? 1 : updated.rewards.rbegin()->first + 1;
-        }
-        if (!updated.rewards.contains(reward.id) && updated.rewards.size() >= 128)
-            return Error(request, "Reward catalog is full.");
-        if (!ValidReward(reward))
+        if (!ValidTierReward(reward))
             return Error(request, "Reward is not valid for this client/server catalog.");
-        updated.rewards[reward.id] = reward;
+        updated.rewards[tier - 1] = reward;
         ++updated.revision;
         auto transaction = CharacterDatabase.BeginTransaction();
         SaveSeason(transaction, updated);
-        Commit(transaction, &request, seasonId, "Save reward " + std::to_string(reward.id),
-            [this, updated] { seasons[updated.id] = updated; Invalidate(); });
-        return;
-    }
-
-    if (action == "DISABLE")
-    {
-        uint32 rewardId = 0;
-        if (!Number(request.fields[6], rewardId) || !updated.rewards.contains(rewardId))
-            return Error(request, "Reward does not exist.");
-        updated.rewards[rewardId].enabled = 0;
-        ++updated.revision;
-        auto transaction = CharacterDatabase.BeginTransaction();
-        SaveSeason(transaction, updated);
-        Commit(transaction, &request, seasonId, "Disable reward " + std::to_string(rewardId),
+        Commit(transaction, &request, seasonId,
+            "Assign tier " + std::to_string(tier) + " reward " + reward.name,
             [this, updated] { seasons[updated.id] = updated; Invalidate(); });
         return;
     }
@@ -849,9 +969,12 @@ void Service::Impl::Admin(RequestContext const& request)
     if (action == "ACTIVATE")
     {
         std::string confirmation;
+        Account validation;
         if (!Decode(request.fields[6], confirmation, 20) || confirmation != "RESET SEASON" ||
             updated.status != "draft")
             return Error(request, "Season activation requires a draft and RESET SEASON confirmation.");
+        if (!ValidSettings(updated.settings) || !Reconcile(validation, updated.tiers) || !AllRewardsValid(updated))
+            return Error(request, "Assign one valid reward to all seven tiers before activation.");
         Season incoming = updated;
         incoming.status = "active";
         incoming.activated = Now();
@@ -873,6 +996,7 @@ void Service::Impl::Admin(RequestContext const& request)
         SaveSeason(transaction, incoming);
         transaction->Append(Statement(CHAR_DEL_COA_ACCOUNTS, incoming.id));
         transaction->Append(Statement(CHAR_DEL_COA_LOCKOUTS, incoming.id));
+        transaction->Append(Statement(CHAR_DEL_COA_TIER_GRANTS, incoming.id));
         Commit(transaction, &request, incoming.id,
             "Activate season " + std::to_string(incoming.id) +
                 (hasOutgoing ? "; archive season " + std::to_string(outgoing.id) : ""),
@@ -907,7 +1031,7 @@ void Service::Impl::Admin(RequestContext const& request)
 void Service::Impl::BootstrapSnapshot(RequestContext const& request)
 {
     Settings const settings = DefaultSettings();
-    Send(request.guid, request.Id(), "BEGIN|0|0|No active season|0|0|0|1|unconfigured");
+    Send(request.guid, request.Id(), "BEGIN|0|0|No active season|0|0|1|unconfigured");
     uint32 rows = 0;
     for (auto const& [key, value] : settings)
     {
@@ -916,9 +1040,7 @@ void Service::Impl::BootstrapSnapshot(RequestContext const& request)
     }
     for (uint32 i = 0; i < DefaultTiers.size(); ++i)
     {
-        Tier const& tier = DefaultTiers[i];
-        Send(request.guid, request.Id(), "TIER|" + std::to_string(i + 1) + "|" +
-            std::to_string(tier.threshold) + "|" + std::to_string(tier.points));
+        Send(request.guid, request.Id(), TierRow(i + 1, DefaultTiers[i], TierReward{}, false));
         ++rows;
     }
     Send(request.guid, request.Id(), "END|" + std::to_string(rows));
@@ -934,147 +1056,30 @@ void Service::Impl::Snapshot(RequestContext const& request, uint32 seasonId)
         return;
     }
 
-    Season const season = seasonItr->second;
+    Season const& season = seasonItr->second;
     Account account;
     if (auto found = accounts.find({seasonId, request.account}); found != accounts.end())
         account = found->second;
 
-    ReadOwnership(seasonId, request.account,
-        [this, request, season, account](bool ok, std::set<uint32> appearances,
-            std::set<uint32> vanities, std::set<uint32> purchases)
+    Send(request.guid, request.Id(), "BEGIN|" + std::to_string(season.id) + "|" +
+        std::to_string(season.revision) + "|" + Encode(season.name) + "|" +
+        std::to_string(account.points) + "|" + std::to_string(account.mask) + "|" +
+        (request.admin ? "1" : "0") + "|" + season.status);
+
+    uint32 rows = 0;
+    for (auto const& [key, value] : season.settings)
     {
-        if (!ok)
-        {
-            Error(request, "Could not read permanent reward ownership.");
-            return;
-        }
-        auto current = seasons.find(season.id);
-        if (current == seasons.end() || current->second.revision != season.revision)
-        {
-            Error(request, "Season changed while state was loading; refresh.");
-            return;
-        }
-
-        Send(request.guid, request.Id(), "BEGIN|" + std::to_string(season.id) + "|" +
-            std::to_string(season.revision) + "|" + Encode(season.name) + "|" +
-            std::to_string(account.progress) + "|" + std::to_string(account.points) + "|" +
-            std::to_string(account.mask) + "|" + (request.admin ? "1" : "0") + "|" + season.status);
-
-        uint32 rows = 0;
-        for (auto const& [key, value] : season.settings)
-        {
-            Send(request.guid, request.Id(), "SETTING|" + key + "|" + std::to_string(value));
-            ++rows;
-        }
-        for (uint32 i = 0; i < season.tiers.size(); ++i)
-        {
-            Tier const& tier = season.tiers[i];
-            Send(request.guid, request.Id(), "TIER|" + std::to_string(i + 1) + "|" +
-                std::to_string(tier.threshold) + "|" + std::to_string(tier.points));
-            ++rows;
-        }
-        for (auto const& [id, reward] : season.rewards)
-        {
-            (void)id;
-            bool const owned = RewardOwned(reward.type, reward.target, reward.id,
-                appearances, vanities, purchases);
-            Send(request.guid, request.Id(), RewardRow(reward, owned));
-            ++rows;
-        }
-        Send(request.guid, request.Id(), "END|" + std::to_string(rows));
-        busy = false;
-    });
-}
-
-void Service::Impl::Buy(RequestContext const& request)
-{
-    uint32 seasonId = 0;
-    uint32 revision = 0;
-    uint32 rewardId = 0;
-    if (!Number(request.fields[3], seasonId) || !Number(request.fields[4], revision) ||
-        !Number(request.fields[5], rewardId))
-    {
-        Error(request, "Invalid purchase request.");
-        return;
+        Send(request.guid, request.Id(), "SETTING|" + key + "|" + std::to_string(value));
+        ++rows;
     }
-
-    auto seasonItr = seasons.find(seasonId);
-    if (!active || seasonId != active || seasonItr == seasons.end() || seasonItr->second.status != "active" ||
-        seasonItr->second.revision != revision)
+    for (uint32 i = 0; i < season.tiers.size(); ++i)
     {
-        Error(request, "Season changed; refresh before purchasing.");
-        return;
+        bool completed = (account.mask & (uint32{1} << i)) != 0;
+        Send(request.guid, request.Id(), TierRow(i + 1, season.tiers[i], season.rewards[i], completed));
+        ++rows;
     }
-    auto rewardItr = seasonItr->second.rewards.find(rewardId);
-    if (rewardItr == seasonItr->second.rewards.end())
-    {
-        Error(request, "Reward is not available.");
-        return;
-    }
-
-    Season const season = seasonItr->second;
-    Reward const reward = rewardItr->second;
-    ReadOwnership(seasonId, request.account,
-        [this, request, season, reward](bool ok, std::set<uint32> appearances,
-            std::set<uint32> vanities, std::set<uint32> purchases)
-    {
-        if (!ok)
-        {
-            Error(request, "Could not verify reward ownership.");
-            return;
-        }
-        auto currentSeason = seasons.find(season.id);
-        if (currentSeason == seasons.end() || currentSeason->second.status != "active" ||
-            currentSeason->second.revision != season.revision || active != season.id)
-        {
-            Error(request, "Season changed; refresh before purchasing.");
-            return;
-        }
-
-        bool const owned = RewardOwned(reward.type, reward.target, reward.id,
-            appearances, vanities, purchases);
-        AccountKey const key{season.id, request.account};
-        Account account;
-        if (auto found = accounts.find(key); found != accounts.end())
-            account = found->second;
-        if (!Purchase(account, season.id, season.revision, season.id, season.revision,
-            reward.cost, reward.minimumTier, owned, reward.enabled != 0))
-        {
-            Error(request, owned ? "Reward is already owned." : "Reward cannot be purchased.");
-            return;
-        }
-
-        auto transaction = CharacterDatabase.BeginTransaction();
-        SaveAccount(transaction, key, account);
-        std::vector<std::shared_ptr<MailDelivery>> deliveries;
-        if (reward.type == "appearance")
-            transaction->Append(Statement(CHAR_INS_COA_APPEARANCE, request.account, reward.target));
-        else if (reward.type == "vanity")
-            transaction->Append(Statement(CHAR_INS_COA_VANITY, request.account, reward.target));
-        else
-        {
-            Award recipient{request.account, request.guid, request.character, 0, "purchase", 0, false};
-            if (!MakeMail(transaction, recipient, reward.target, reward.count, deliveries))
-            {
-                Error(request, "Could not prepare reward delivery.");
-                return;
-            }
-        }
-        transaction->Append(Statement(CHAR_INS_COA_PURCHASE, season.id, request.account,
-            request.character, reward.id, reward.type, reward.target, reward.count, reward.cost,
-            request.Id(), Now()));
-
-        Commit(transaction, &request, season.id,
-            "Purchase reward " + std::to_string(reward.id),
-            [this, key, account, request, reward, deliveries]
-        {
-            accounts[key] = account;
-            PublishMail(deliveries);
-            if (reward.type == "appearance" || reward.type == "vanity")
-                AscensionSeasonCollection::Refresh(request.account);
-            Invalidate(request.account);
-        });
-    });
+    Send(request.guid, request.Id(), "END|" + std::to_string(rows));
+    busy = false;
 }
 
 void Service::Impl::AwardProgress(Award const& award)
@@ -1104,7 +1109,6 @@ void Service::Impl::AwardProgress(Award const& award)
     uint32 tokens = 0;
     if (award.activity == "level")
     {
-        // A missed first login initializes rather than retroactively rewarding existing levels.
         if (!levels.contains(award.character))
         {
             transaction->Append(Statement(CHAR_REP_COA_LEVEL, award.character, uint32(award.level)));
@@ -1146,25 +1150,35 @@ void Service::Impl::AwardProgress(Award const& award)
                 season.settings.at(award.activity + "_max"));
     }
     AccountKey accountKey{active, award.account};
-    Account account = accounts[accountKey];
+    Account before;
+    if (auto found = accounts.find(accountKey); found != accounts.end())
+        before = found->second;
+    Account account = before;
     uint64 amount = uint64(rate->second) * multiplier;
-    if (amount > UINT32_MAX || !AddProgress(account, static_cast<uint32>(amount), season.tiers))
+    if (amount > UINT32_MAX || !AddPoints(account, static_cast<uint32>(amount), season.tiers))
     {
-        LOG_ERROR("module.coa_season", "Award overflow for account {}", award.account);
+        LOG_ERROR("module.coa_season", "Season Point overflow for account {}", award.account);
         busy = false;
         return;
     }
+    uint32 bits = NewlyCompleted(before, account);
     SaveAccount(transaction, accountKey, account);
     if (lockout)
         transaction->Append(Statement(CHAR_REP_COA_LOCKOUT, active, award.account, award.entry, now));
     std::vector<std::shared_ptr<MailDelivery>> deliveries;
+    if (!AppendTierGrants(transaction, season, accountKey, bits, award.character, award.guid, deliveries))
+    {
+        LOG_ERROR("module.coa_season", "Cannot prepare tier grants for account {}", award.account);
+        busy = false;
+        return;
+    }
     if (!MakeMail(transaction, award, 975001, tokens, deliveries))
     {
         LOG_ERROR("module.coa_season", "Cannot create token mail; award rejected for {}", award.account);
         busy = false;
         return;
     }
-    Commit(transaction, nullptr, active, "", [this, accountKey, account, key, lockout, now, award, deliveries]
+    Commit(transaction, nullptr, active, "", [this, accountKey, account, key, lockout, now, award, bits, deliveries]
     {
         accounts[accountKey] = account;
         if (lockout)
@@ -1172,6 +1186,8 @@ void Service::Impl::AwardProgress(Award const& award)
         if (award.activity == "level")
             levels[award.character] = award.level;
         PublishMail(deliveries);
+        if (bits)
+            AscensionSeasonCollection::Refresh(award.account);
         Invalidate(award.account);
     }, award.account);
 }
