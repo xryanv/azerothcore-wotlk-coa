@@ -29,8 +29,11 @@ A.Receive("1|" .. request .. "|BEGIN|1|3|First|90|25|0|0|active", "Tester")
 for i = 7, 1, -1 do
     A.Receive("1|" .. request .. "|TIER|" .. i .. "|" .. (i * 100) .. "|25", "Tester")
 end
+for _,key in ipairs(A.settingKeys or {}) do
+    A.Receive("1|" .. request .. "|SETTING|" .. key .. "|0", "Tester")
+end
 A.Receive("1|" .. request .. "|REWARD|7|appearance|100|100|1|25|0|1|0|Hat|Cosmetic|0", "Tester")
-A.Receive("1|" .. request .. "|END|8", "Tester")
+A.Receive("1|" .. request .. "|END|" .. (8 + #(A.settingKeys or {})), "Tester")
 check(A.state and A.state.season == 1 and #A.state.rewards == 1, "coherent unordered snapshot")
 local old = request
 request = A.Refresh()
@@ -40,7 +43,10 @@ A.Receive("1|" .. request .. "|BEGIN|2|1|Second|0|0|0|1|active", "Tester")
 for i = 1, 7 do
     A.Receive("1|" .. request .. "|TIER|" .. i .. "|" .. (i * 100) .. "|25", "Tester")
 end
-A.Receive("1|" .. request .. "|END|7", "Tester")
+for _,key in ipairs(A.settingKeys or {}) do
+    A.Receive("1|" .. request .. "|SETTING|" .. key .. "|0", "Tester")
+end
+A.Receive("1|" .. request .. "|END|" .. (7 + #(A.settingKeys or {})), "Tester")
 check(A.state.season == 2 and A.state.points == 0 and A.state.mask == 0, "rollover replaces state")
 check(#A.state.rewards == 0, "empty catalog clears old rewards")
 check(A.Request("BUY", string.rep("a", 250)) == nil, "oversized outgoing request rejected")
@@ -62,4 +68,21 @@ check(saves == 0, "read completion does not trigger mutation refresh")
 request = A.Request("ADMIN", "SETTING", 2, 1, "quest", 5)
 A.Receive("1|" .. request .. "|OK|Saved", "Tester")
 check(saves == 1, "mutation completion requests authoritative refresh")
+local resyncs=0
+A.listeners[#A.listeners+1]=function(kind)if kind=="resync" then resyncs=resyncs+1 end end
+request=A.Request("BUY",2,1,7)
+A.Receive("1|"..request.."|ERROR|Stale", "Tester")
+check(resyncs==1, "failed purchase requests authoritative refresh")
+A.Receive("1|push|INVALIDATE|3|1","Tester")
+check(A.stale, "authoritative push invalidates purchase snapshot")
+local prior=A.state
+request=A.Refresh()
+A.Receive("1|"..request.."|BEGIN|3|1|Third|0|0|0|1|active","Tester")
+for i=1,7 do A.Receive("1|"..request.."|TIER|"..i.."|"..(i*100).."|25","Tester")end
+A.Receive("1|"..request.."|END|7","Tester")
+check(A.state==prior, "snapshot missing economy settings rejected")
+local firstSessionId=A.Request("GET")
+dofile(root .. "Protocol.lua")
+local secondSessionId=CoASeason.Request("GET")
+check(firstSessionId~=secondSessionId, "request ids remain unique across addon sessions")
 print("PASS " .. count .. " protocol checks")

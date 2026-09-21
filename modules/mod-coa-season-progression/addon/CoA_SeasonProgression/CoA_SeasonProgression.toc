@@ -3,6 +3,7 @@
 ## Notes: Account season progress and GM administration using Ascension previews.
 ## Author: CoA Local Realm
 ## Version: 1.0.0
+## SavedVariables: CoASeasonSaved
 Protocol.lua
 SeasonUI.lua
 AdminUI.lua

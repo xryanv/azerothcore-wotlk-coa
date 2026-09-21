@@ -29,4 +29,16 @@ A.PaintTier(node, {points=25}, true)
 assert(node.Complete and complete and hidden)
 A.PaintTier(node, {points=25}, false)
 assert(not node.Complete and not complete and not hidden, "rollover clears old Complete state")
+local noop=function()end
+local button={Disable=noop}
+local model={coaEditorReward={target=200},ClearModel=noop,Title={SetText=noop},
+    Header={SetText=noop},CollectButton=button,PrevButton=button,NextButton=button}
+A.state={rewards={}}
+A.UpdateModel(model,1)
+assert(model.coaEditorReward==nil, "catalog render clears stale GM preview")
+local refreshes=0
+A.Refresh=function()refreshes=refreshes+1 end
+assert(type(A.OnSeasonFrameShow)=="function", "season frame has an authoritative reopen handler")
+A.OnSeasonFrameShow()
+assert(refreshes==1, "reopening the native season frame fetches authoritative state")
 print("PASS season UI rules and rollover visuals")

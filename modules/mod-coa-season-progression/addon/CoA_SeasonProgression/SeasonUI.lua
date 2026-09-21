@@ -13,7 +13,7 @@ function A.ProgressPercent(progress, tiers)
     return 100
 end
 function A.CanBuy(reward, state)
-    return reward and state and state.status == "active" and reward.enabled and not reward.owned
+    return not A.stale and reward and state and state.status == "active" and reward.enabled and not reward.owned
         and state.points >= reward.cost
         and (reward.minTier == 0 or A.TierComplete(state.mask, reward.minTier))
 end
@@ -59,6 +59,7 @@ function A.ShowPreview(model, reward)
     return false
 end
 function A.UpdateModel(model, index)
+    model.coaEditorReward = nil
     local state = A.state
     local rewards = state and state.rewards or {}
     if #rewards == 0 then
@@ -128,11 +129,15 @@ local function tierTooltip(node, index)
     end
     GameTooltip:Show()
 end
+function A.OnSeasonFrameShow()
+    A.Refresh(A.viewSeason)
+    A.Paint()
+end
 function A.Adapt()
     local frame = SeasonCollectionFrame
     if not frame or frame.coaAdapted then return end
     frame.coaAdapted = true
-    frame.OnShow = function() A.Paint() end
+    frame.OnShow = function() A.OnSeasonFrameShow() end
     frame.UnlockInfo.UnlockButton:Hide()
     frame.UnlockInfo.UnlockButton:SetScript("OnShow", function(self) self:Hide() end)
     local bar = frame.ProgressBar
@@ -196,6 +201,7 @@ end
 SLASH_COASEASON1="/coaseason"
 A.listeners[#A.listeners+1]=function(kind,value)
     if kind=="state" then A.Adapt(); A.Paint()
+    elseif kind=="resync" then A.buyPending=nil; A.Refresh(A.viewSeason)
     elseif kind=="ok" or kind=="error" then
         A.buyPending=nil
         if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage("|cff80ff80Season:|r "..value) end

@@ -64,6 +64,18 @@ local function clear()
     UI.content:SetHeight(1000)
 end
 local render
+local function rewardForState(reward, state)
+    local copy={}
+    for k,v in pairs(reward)do copy[k]=v end
+    copy._season=state.season
+    copy._revision=state.revision
+    return copy
+end
+local function clearPreview()
+    local model=SeasonCollectionFrame and SeasonCollectionFrame.RewardModel
+    if model then model.coaEditorReward=nil end
+    if A.Paint then A.Paint() end
+end
 local function showPreview(reward)
     if not SeasonCollectionFrame then A.Open() end
     local model=SeasonCollectionFrame and SeasonCollectionFrame.RewardModel
@@ -163,8 +175,8 @@ local function rewardsPanel()
         if i>25 then break end
         local row=reward
         button("browse_row"..i,8,y,460,row.name.." ("..row.type..":"..row.target..")",function()
-            UI.reward={id=0,type=row.type,target=row.target,preview=row.preview,count=1,cost=25,
-                minTier=0,enabled=true,order=0,name=row.name,category="Cosmetic"}
+            UI.reward=rewardForState({id=0,type=row.type,target=row.target,preview=row.preview,count=1,cost=25,
+                minTier=0,enabled=true,order=0,name=row.name,category="Cosmetic"},s)
             render();showPreview(UI.reward)
         end)
         y=y+26
@@ -173,15 +185,14 @@ local function rewardsPanel()
     for i,reward in ipairs(s.rewards)do
         local row=reward
         button("catalog_row"..i,8,y,460,row.id..": "..row.name.." — "..row.cost.." points"..(row.enabled and "" or " (disabled)"),function()
-            UI.reward={}
-            for k,v in pairs(row)do UI.reward[k]=v end
+            UI.reward=rewardForState(row,s)
             render();showPreview(UI.reward)
         end)
         y=y+26
     end
     button("reward_blank",8,y+6,190,"New reward by ID",function()
-        UI.reward={id=0,type="appearance",target=0,preview=0,count=1,cost=25,minTier=0,
-            enabled=true,order=0,name="",category="Cosmetic"};render()
+        UI.reward=rewardForState({id=0,type="appearance",target=0,preview=0,count=1,cost=25,minTier=0,
+            enabled=true,order=0,name="",category="Cosmetic"},s);render()
     end);y=y+44
     local r=UI.reward
     if r then
@@ -218,6 +229,9 @@ local function rewardsPanel()
             local value=collect();if value then showPreview(value)end
         end)
         button("reward_save",328,y,140,"Save reward",function()
+            if r._season~=A.state.season or r._revision~=A.state.revision then
+                A.Notify("error","Season changed; reselect this reward before saving.");return
+            end
             local value=collect()
             if not value then return end
             UI.force=true
@@ -225,7 +239,7 @@ local function rewardsPanel()
                 value.minTier,value.enabled and 1 or 0,value.order,A.Encode(value.name),A.Encode(value.category))
         end)
         y=y+32
-        button("reward_discard",8,y,150,"Discard changes",function()UI.reward=nil;render();A.Paint()end)
+        button("reward_discard",8,y,150,"Discard changes",function()UI.reward=nil;render();clearPreview()end)
         if r.id>0 then button("reward_disable",170,y,150,"Disable reward",function()
             UI.force=true;mutate("DISABLE",r.id)
         end) end
@@ -306,7 +320,7 @@ function A.ShowAdmin()
         UI.title:SetPoint("TOPLEFT",18,-18)
         local close=CreateFrame("Button",nil,frame,"UIPanelCloseButton")
         close:SetPoint("TOPRIGHT",-4,-4)
-        close:SetScript("OnClick",function()frame:Hide();A.viewSeason=nil;A.Refresh()end)
+        close:SetScript("OnClick",function()frame:Hide();UI.reward=nil;clearPreview();A.viewSeason=nil;A.Refresh()end)
         for i,name in ipairs({"Season","Economy","Rewards","Accounts","History"})do
             local tab=name
             local b=CreateFrame("Button",nil,frame,"UIPanelButtonTemplate")
@@ -324,6 +338,10 @@ function A.ShowAdmin()
 end
 A.listeners[#A.listeners+1]=function(kind,value)
     if kind=="state" then
+        if UI.reward and (UI.reward._season~=value.season or UI.reward._revision~=value.revision) then
+            UI.reward=nil
+            clearPreview()
+        end
         if UI.frame and not value.admin then UI.frame:Hide() end
         if UI.frame and UI.frame:IsShown() and value.admin then
             if UI.force or UI.lastSeason~=value.season then render() end

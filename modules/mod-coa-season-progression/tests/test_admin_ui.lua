@@ -62,6 +62,14 @@ local before=#requests
 field:SetText("-5")
 save.scripts.OnClick(save)
 assert(#requests==before,"negative economy value rejected locally")
+click("Rewards")
+click("New reward by ID")
+local saveReward
+for _,f in ipairs(frames)do if f.text=="Save reward" and f.shown then saveReward=f end end
+assert(saveReward and saveReward.shown, "reward editor opened")
+A.state={season=2,revision=1,name="Second",admin=true,status="draft",settings={},tiers=tiers,rewards={}}
+for _,listener in ipairs(A.listeners)do listener("state",A.state)end
+assert(not saveReward.shown, "switching seasons clears reward edits from the previous season")
 click("Season")
 before=#requests
 click("Create with defaults")

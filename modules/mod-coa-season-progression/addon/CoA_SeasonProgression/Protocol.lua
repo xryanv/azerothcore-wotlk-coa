@@ -1,7 +1,29 @@
 -- Original CoA companion addon. Server state is authoritative.
-CoASeason = { prefix = "COASEASON", pending = {}, listeners = {}, queue = {}, serial = 0 }
+CoASeasonSaved = CoASeasonSaved or {}
+local function clientNonce()
+    if type(CoASeasonSaved.clientNonce) == "string" and CoASeasonSaved.clientNonce:match("^%d+$") then
+        return CoASeasonSaved.clientNonce
+    end
+    local raw = tostring(type(time) == "function" and time() or 0) .. ":" .. tostring(GetTime()) .. ":" .. tostring({})
+    local hash = 5381
+    for i = 1, #raw do hash = (hash * 33 + string.byte(raw, i)) % 100000000 end
+    CoASeasonSaved.clientNonce = tostring(hash)
+    return CoASeasonSaved.clientNonce
+end
+CoASeasonSaved.session = ((tonumber(CoASeasonSaved.session) or 0) % 999999) + 1
+CoASeason = { prefix = "COASEASON", pending = {}, listeners = {}, queue = {}, serial = 0,
+    clientNonce = clientNonce(), session = CoASeasonSaved.session }
 local A = CoASeason
 local MAX = 4294967295
+A.settingKeys = {"quest","level","elite","rare","rare_elite","dungeon","heroic","raid","world","level_tokens",
+    "dungeon_min","dungeon_max","dungeon_chance","heroic_min","heroic_max","heroic_chance",
+    "raid_min","raid_max","raid_chance","world_min","world_max","world_chance","lockout_enabled","lockout_seconds"}
+A.settingKeySet = {}
+for _, key in ipairs(A.settingKeys) do A.settingKeySet[key] = true end
+local reads = { LIST=true, BROWSE=true, ACCOUNT=true, HISTORY=true, GET=true }
+local function isMutation(request)
+    return request and (request.operation == "BUY" or (request.operation == "ADMIN" and not reads[request.action]))
+end
 function A.Encode(value)
     return (tostring(value):gsub("([^%w %-%._])", function(c) return string.format("%%%02X", string.byte(c)) end))
 end
@@ -30,7 +52,7 @@ end
 function A.Request(operation, ...)
     if #A.queue >= 16 then A.Notify("error", "Too many requests. Please wait."); return nil end
     A.serial = A.serial + 1
-    local id = "c" .. math.floor(GetTime() * 1000) .. "_" .. A.serial
+    local id = "c" .. A.clientNonce .. "_" .. A.session .. "_" .. A.serial
     local fields = { "1", id, operation, ... }
     for i, value in ipairs(fields) do fields[i] = tostring(value) end
     local message = table.concat(fields, "|")
@@ -47,9 +69,11 @@ function A.Refresh(season)
     return A.refreshId
 end
 local function fail(id, message)
+    local request = A.pending[id]
     A.pending[id] = nil
     if A.refreshId == id then A.refreshId = nil end
     A.Notify("error", message)
+    if isMutation(request) then A.Notify("resync", id) end
 end
 local function numeric(fields, positions)
     for _, position in ipairs(positions) do
@@ -63,6 +87,12 @@ function A.Receive(message, sender)
     local f = split(message)
     if f[1] ~= "1" then return end
     local id, kind = f[2], f[3]
+    if kind == "INVALIDATE" then
+        if id ~= "push" or #f ~= 5 or not numeric(f, {4,5}) then return end
+        A.stale = true
+        A.Notify("resync", {season=f[4], revision=f[5]})
+        return
+    end
     local request = A.pending[id]
     if not request then return end
     if kind == "ERROR" or kind == "OK" then
@@ -70,9 +100,8 @@ function A.Receive(message, sender)
         if not text then return fail(id, "Invalid server response.") end
         A.pending[id] = nil
         A.Notify(kind == "ERROR" and "error" or "ok", text)
-        local reads = { LIST=true, BROWSE=true, ACCOUNT=true, HISTORY=true, GET=true }
-        if kind == "OK" and (request.operation == "BUY" or
-            (request.operation == "ADMIN" and not reads[request.action])) then A.Notify("saved", id) end
+        if kind == "ERROR" and isMutation(request) then A.Notify("resync", id) end
+        if kind == "OK" and isMutation(request) then A.Notify("saved", id) end
         return
     end
     if kind == "BEGIN" then
@@ -113,6 +142,9 @@ function A.Receive(message, sender)
     if kind == "END" then
         local rows = A.Number(f[4])
         if #f ~= 4 or rows ~= s.rows or #s.tiers ~= 7 then return fail(id, "Incomplete season data; refresh.") end
+        for _, key in ipairs(A.settingKeys) do
+            if s.settings[key] == nil then return fail(id, "Incomplete season settings; refresh.") end
+        end
         local threshold = 0
         for i=1,7 do
             if not s.tiers[i] or s.tiers[i].threshold <= threshold then
@@ -123,6 +155,7 @@ function A.Receive(message, sender)
         table.sort(s.rewards, function(x,y) return x.order == y.order and x.id < y.id or x.order < y.order end)
         s.keys, s.rows = nil, nil
         A.state = s
+        A.stale = nil
         A.pending[id], A.refreshId = nil, nil
         A.Notify("state", s)
         return
@@ -130,7 +163,7 @@ function A.Receive(message, sender)
     local key
     if kind == "SETTING" and #f == 5 then
         local n = A.Number(f[5])
-        if not n or not f[4]:match("^[a-z_]+$") then return fail(id, "Invalid season setting.") end
+        if not n or not A.settingKeySet[f[4]] then return fail(id, "Invalid season setting.") end
         key = "s" .. f[4]
         s.settings[f[4]] = n
     elseif kind == "TIER" and #f == 6 and numeric(f, {4,5,6}) then
