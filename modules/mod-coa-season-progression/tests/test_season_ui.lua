@@ -52,9 +52,57 @@ assert(button.hidden or button.enabled == false or button.disabled, "player purc
 A.UpdateModel(model, 3)
 assert(model.previewed == 1003 and values.header:find("300",1,true), "locked tier shows required cumulative points")
 
-local refreshes=0
-A.Refresh=function() refreshes=refreshes+1 end
+-- GM Tier Edit Mode policy and request shape.
+local adminFrame={shown=true,Hide=function(self)self.shown=false end,IsShown=function(self)return self.shown end}
+CoASeasonAdminFrame=adminFrame
+SeasonCollectionFrame={shown=true,Show=function(self)self.shown=true end,Hide=function(self)self.shown=false end,
+    IsShown=function(self)return self.shown end,RewardModel=model}
+local browserOpens=0
+A.OpenAssignmentBrowser=function()browserOpens=browserOpens+1;return true end
+A.state.admin=false
+assert(not A.EnterTierEditMode(), "non-GM cannot arm tier editing")
+A.state={season=4,revision=7,name="Draft",points=0,mask=0,admin=true,status="draft",tiers=tiers,settings={}}
+assert(A.EnterTierEditMode() and A.tierEditMode and not adminFrame.shown, "GM edit mode arms and hides standalone admin")
+assert(not A.HandleTierClick(0) and A.assignmentTier==nil, "tier zero cannot become an assignment tier")
+assert(A.HandleTierClick(4) and A.assignmentTier==4 and browserOpens==1, "edit-mode tier click opens native browser")
+
+local captured={}
+A.Request=function(...)captured={...};return "assign-1"end
+assert(A.CaptureAppearanceSelection({appearanceID=4404,displayName="Appearance Four"}), "appearance model selection captured")
+assert(A.assignmentCandidate.type=="appearance" and A.assignmentCandidate.preview==4404)
+assert(A.SubmitTierAssignment()=="assign-1", "valid candidate submits")
+assert(captured[1]=="ADMIN" and captured[2]=="ASSIGN" and captured[3]==4 and captured[4]==7 and
+    captured[5]==4 and captured[6]=="appearance" and captured[7]==4404 and captured[8]==4404 and
+    captured[9]==1 and A.Decode(captured[10])=="Appearance Four", "ASSIGN payload binds season revision tier and reward")
+
+local refreshes, selected=0,0
+A.Refresh=function()refreshes=refreshes+1 end
+A.SelectTier=function(i)selected=i end
+for _,listener in ipairs(A.listeners) do listener("saved","assign-1") end
+assert(not A.tierEditMode and refreshes==1, "successful assignment exits edit mode and refreshes")
+A.state={season=4,revision=8,name="Draft",points=0,mask=0,admin=true,status="draft",tiers=tiers,settings={}}
+SeasonCollectionFrame.shown=false
+A.Adapt=function()end
+A.Paint=function()end
+for _,listener in ipairs(A.listeners) do listener("state",A.state) end
+assert(SeasonCollectionFrame.shown and selected==4, "refreshed assignment returns to the edited tier")
+
+assert(A.EnterTierEditMode())
+assert(A.HandleTierClick(5))
+GetItemInfo=function(id)return "Vanity "..id end
+C_Appearance={GetItemAppearanceID=function(id)return id+10000 end}
+StoreCollectionFrame={ItemInternal=777}
+assert(A.CaptureVanitySelection(StoreCollectionFrame), "native vanity selection captured")
+assert(A.assignmentCandidate.type=="vanity" and A.assignmentCandidate.target==777 and A.assignmentCandidate.preview==10777)
+A.state.revision=9
+assert(not A.SubmitTierAssignment() and not A.tierEditMode and A.assignmentTier==nil,
+    "stale season revision clears tier edit mode")
+
+A.ExitTierEditMode()
+assert(A.HandleTierClick(3) and selected==3 and browserOpens==2, "normal tier click stays normal outside edit mode")
+
+refreshes=0
 assert(type(A.OnSeasonFrameShow)=="function", "season frame has authoritative reopen handler")
 A.OnSeasonFrameShow()
 assert(refreshes==1, "reopening native season frame fetches authoritative state")
-print("PASS season UI cumulative tier reward rules")
+print("PASS season UI cumulative tier reward and GM edit-mode rules")
