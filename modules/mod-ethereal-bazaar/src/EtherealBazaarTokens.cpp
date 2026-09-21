@@ -32,44 +32,62 @@
 #include "Mail.h"
 #include "Random.h"
 #include "ScriptMgr.h"
+#include "SeasonProgressionState.h"
+
+#include <atomic>
+#include <memory>
 
 namespace
 {
-    bool Enabled()
+    struct RewardRange
     {
-        return sConfigMgr->GetOption<bool>("EtherealBazaar.Tokens.Enable", true);
+        uint32 Min;
+        uint32 Max;
+    };
+
+    struct TokenConfig
+    {
+        bool Enabled = true;
+        bool Announce = false;
+        uint32 BonusLevel = 60;
+        uint32 BonusPercent = 150;
+        RewardRange Quest{0, 12};
+        RewardRange Creature{0, 3};
+        RewardRange DungeonBoss{14, 22};
+        RewardRange RaidBoss{41, 53};
+    };
+
+    std::atomic<std::shared_ptr<TokenConfig const>> tokenConfig{std::make_shared<TokenConfig>()};
+
+    RewardRange LoadRange(char const* name, RewardRange defaults)
+    {
+        uint32 const low = sConfigMgr->GetOption<uint32>(
+            Acore::StringFormat("EtherealBazaar.Tokens.{}.Min", name), defaults.Min);
+        uint32 const high = sConfigMgr->GetOption<uint32>(
+            Acore::StringFormat("EtherealBazaar.Tokens.{}.Max", name), defaults.Max);
+        return {low, std::max(low, high)};
     }
 
-    uint32 Wuerfeln(char const* was, uint32 minVorgabe, uint32 maxVorgabe)
+    uint32 RollAmount(RewardRange const& range)
     {
-        uint32 const lo = sConfigMgr->GetOption<uint32>(
-            Acore::StringFormat("EtherealBazaar.Tokens.{}.Min", was), minVorgabe);
-        uint32 const hi = sConfigMgr->GetOption<uint32>(
-            Acore::StringFormat("EtherealBazaar.Tokens.{}.Max", was), maxVorgabe);
-        return urand(lo, std::max(lo, hi));
+        return urand(range.Min, range.Max);
     }
 
-    // The multiplier is a percentage so the config can hold a whole number.
-    // At 150 a level-60 character earns half again as much.
-    uint32 ApplyLevelBonus(Player* player, uint32 amount)
+    // At 150 a character at the bonus level earns half again as much.
+    uint32 ApplyLevelBonus(Player const* player, uint32 amount, TokenConfig const& config)
     {
-        if (!amount)
-            return 0;
-
-        uint32 const abLevel = sConfigMgr->GetOption<uint32>("EtherealBazaar.Tokens.BonusLevel", 60);
-        if (player->GetLevel() < abLevel)
+        if (!amount || player->GetLevel() < config.BonusLevel)
             return amount;
-
-        uint32 const prozent = sConfigMgr->GetOption<uint32>("EtherealBazaar.Tokens.BonusPercent", 150);
-        return std::max<uint32>(1, amount * prozent / 100);
+        uint64 const bonus = uint64(amount) * config.BonusPercent / 100;
+        return static_cast<uint32>(std::clamp<uint64>(bonus, 1, UINT32_MAX));
     }
 
-    void Grant(Player* player, uint32 amount, char const* grund)
+    void Grant(Player* player, uint32 amount, char const* grund, TokenConfig const& config)
     {
         if (!player || !amount)
             return;
 
-        amount = ApplyLevelBonus(player, amount);
+        amount = ApplyLevelBonus(player, amount, config);
         if (!amount)
             return;
 
@@ -86,7 +104,7 @@ namespace
             // Tokens faellt er bei jedem zweiten Mob an und wird schnell zum
             // Rauschen; die Tasche aktualisiert sich auch ohne ihn. Wer ihn
             // will, schaltet ihn an.
-            if (item && sConfigMgr->GetOption<bool>("EtherealBazaar.Tokens.Announce", false))
+            if (item && config.Announce)
                 player->SendNewItem(item, amount, true, false);
         }
         else if (Item* item = Item::CreateItem(BAZAAR_TOKEN_ITEM, amount, player))
@@ -105,6 +123,27 @@ namespace
     }
 }
 
+class ethereal_bazaar_token_config final : public WorldScript
+{
+public:
+    ethereal_bazaar_token_config() : WorldScript("ethereal_bazaar_token_config",
+        {WORLDHOOK_ON_AFTER_CONFIG_LOAD}) { }
+
+    void OnAfterConfigLoad(bool /*reload*/) override
+    {
+        auto config = std::make_shared<TokenConfig>();
+        config->Enabled = sConfigMgr->GetOption<bool>("EtherealBazaar.Tokens.Enable", true);
+        config->Announce = sConfigMgr->GetOption<bool>("EtherealBazaar.Tokens.Announce", false);
+        config->BonusLevel = sConfigMgr->GetOption<uint32>("EtherealBazaar.Tokens.BonusLevel", 60);
+        config->BonusPercent = sConfigMgr->GetOption<uint32>("EtherealBazaar.Tokens.BonusPercent", 150);
+        config->Quest = LoadRange("Quest", config->Quest);
+        config->Creature = LoadRange("Creature", config->Creature);
+        config->DungeonBoss = LoadRange("DungeonBoss", config->DungeonBoss);
+        config->RaidBoss = LoadRange("RaidBoss", config->RaidBoss);
+        tokenConfig.store(std::move(config));
+    }
+};
+
 class ethereal_bazaar_tokens : public PlayerScript
 {
 public:
@@ -112,15 +151,17 @@ public:
 
     void OnPlayerCompleteQuest(Player* player, Quest const* quest) override
     {
-        if (!Enabled() || !player || !quest)
+        auto config = tokenConfig.load();
+        if (!config->Enabled || CoASeasonState::Active() || !player || !quest)
             return;
 
-        Grant(player, Wuerfeln("Quest", 0, 12), "a quest");
+        Grant(player, RollAmount(config->Quest), "a quest", *config);
     }
 
     void OnPlayerCreatureKill(Player* killer, Creature* killed) override
     {
-        if (!Enabled() || !killer || !killed)
+        auto config = tokenConfig.load();
+        if (!config->Enabled || CoASeasonState::Active() || !killer || !killed)
             return;
 
         // Nothing for what a player made themselves, and nothing for the
@@ -133,18 +174,19 @@ public:
         // outside an instance are deliberately left with the ordinary rate.
         if (killed->IsDungeonBoss())
         {
-            Map const* map = killed->GetMap();
+            Map const* map = killed->FindMap();
             bool const raid = map && map->IsRaid();
-            Grant(killer, Wuerfeln(raid ? "RaidBoss" : "DungeonBoss", raid ? 41 : 14, raid ? 53 : 22),
-                  raid ? "a raid boss" : "a dungeon boss");
+            Grant(killer, RollAmount(raid ? config->RaidBoss : config->DungeonBoss),
+                  raid ? "a raid boss" : "a dungeon boss", *config);
             return;
         }
 
-        Grant(killer, Wuerfeln("Creature", 0, 3), "a creature");
+        Grant(killer, RollAmount(config->Creature), "a creature", *config);
     }
 };
 
 void AddEtherealBazaarTokenScripts()
 {
+    new ethereal_bazaar_token_config();
     new ethereal_bazaar_tokens();
 }

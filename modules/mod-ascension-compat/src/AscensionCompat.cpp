@@ -23,6 +23,7 @@
 #include "AscensionCoATalentState.h"
 #include "AscensionRunemasterEchoes.h"
 #include "AscensionCollectionModelData.h"
+#include "AscensionSeasonCollection.h"
 #include "AscensionAmmunitionData.h"
 #include "AscensionPersonalBank.h"
 #include "AscensionCollectibleSpellData.h"
@@ -90,6 +91,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <charconv>
+#include <cctype>
 #include <type_traits>
 #include <deque>
 #include <limits>
@@ -433,6 +436,7 @@ struct VanityInfo {
 
 struct PlayerCollectionState {
   uint32 AccountId = 0;
+  uint64 SeasonRevision = 0;
   std::unordered_set<uint32> CollectedAppearances;
   std::unordered_set<uint32> OwnedVanityItems;
   std::array<uint32, APPEARANCE_CATEGORY_COUNT> ActiveAppearances{};
@@ -3334,6 +3338,129 @@ public:
     return instance;
   }
 
+    bool ValidateSeasonReward(std::string const& type, uint32 target, uint32 preview) const
+    {
+        if (!_clientDataLoaded || !target)
+            return false;
+        if (type == "appearance")
+            return preview == target && _appearances.contains(target);
+        if (preview && !_appearances.contains(preview))
+            return false;
+        if (type == "item")
+            return sObjectMgr->GetItemTemplate(target) != nullptr;
+        return type == "vanity" && _vanityItems.contains(target);
+    }
+
+    static std::string SeasonSearchKey(std::string value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value;
+    }
+
+    std::vector<AscensionSeasonCollection::Entry> BrowseSeasonRewards(
+        std::string const& type, std::string const& search, uint32 offset) const
+    {
+        std::vector<AscensionSeasonCollection::Entry> result;
+        if (!_clientDataLoaded || search.size() > 80 ||
+            (!type.empty() && type != "item" && type != "appearance" && type != "vanity"))
+            return result;
+
+        // Ordinary items have no collection catalog: resolve an exact item ID only.
+        if (type.empty() || type == "item")
+        {
+            uint32 item = 0;
+            auto parsed = std::from_chars(search.data(), search.data() + search.size(), item);
+            if (parsed.ec == std::errc() && parsed.ptr == search.data() + search.size())
+                if (ItemTemplate const* entry = sObjectMgr->GetItemTemplate(item))
+                {
+                    auto preview = _itemAppearances.find(item);
+                    result.push_back({"item", item,
+                        preview != _itemAppearances.end() ? preview->second : 0, entry->Name1});
+                }
+        }
+        std::string const key = SeasonSearchKey(search);
+        if (type != "item")
+            for (AscensionSeasonCollection::Entry const& entry : _seasonEntries)
+            {
+                if ((!type.empty() && entry.Type != type) || (!key.empty() &&
+                    SeasonSearchKey(entry.Name).find(key) == std::string::npos &&
+                    std::to_string(entry.Target).find(key) == std::string::npos))
+                    continue;
+                result.push_back(entry);
+            }
+        std::sort(result.begin(), result.end(), [](auto const& left, auto const& right)
+        {
+            return left.Type == right.Type ? left.Target < right.Target : left.Type < right.Type;
+        });
+        if (offset >= result.size())
+            return {};
+        auto first = result.begin() + offset;
+        return {first, first + std::min<std::size_t>(25, result.size() - offset)};
+    }
+
+    void BuildSeasonCatalog()
+    {
+        _seasonEntries.clear();
+        std::unordered_map<uint32, uint32> sourceItems;
+        for (auto const& [item, appearance] : _itemAppearances)
+            if (sObjectMgr->GetItemTemplate(item))
+            {
+                auto [itr, inserted] = sourceItems.emplace(appearance, item);
+                if (!inserted && item < itr->second)
+                    itr->second = item;
+            }
+        for (auto const& [target, appearance] : _appearances)
+        {
+            ItemTemplate const* item = sObjectMgr->GetItemTemplate(appearance.SourceItem);
+            if (!item)
+                if (auto itr = sourceItems.find(target); itr != sourceItems.end())
+                    item = sObjectMgr->GetItemTemplate(itr->second);
+            // The client preview API consumes the appearance ID, including non-item appearances.
+            _seasonEntries.push_back({"appearance", target, target,
+                item ? item->Name1 : "Appearance " + std::to_string(target)});
+        }
+        for (auto const& [target, vanity] : _vanityItems)
+        {
+            (void)vanity;
+            ItemTemplate const* item = sObjectMgr->GetItemTemplate(target);
+            auto preview = _itemAppearances.find(target);
+            _seasonEntries.push_back({"vanity", target,
+                preview != _itemAppearances.end() ? preview->second : 0,
+                item ? item->Name1 : "Vanity " + std::to_string(target)});
+        }
+    }
+
+    void QueueSeasonRefresh(uint32 account)
+    {
+        std::lock_guard lock(_stateMutex);
+        ++_seasonRevisions[account];
+    }
+
+    void ProcessSeasonRefresh(Player* player)
+    {
+        auto state = GetState(player);
+        if (!state)
+            return;
+        uint64 revision = 0;
+        {
+            std::lock_guard lock(_stateMutex);
+            auto itr = _seasonRevisions.find(state->AccountId);
+            if (itr != _seasonRevisions.end())
+                revision = itr->second;
+        }
+        if (state->SeasonRevision == revision)
+            return;
+        // Existing collection persistence remains authoritative; no UI/cache grant precedes commit.
+        LoadPlayerState(player, *state);
+        state->SeasonRevision = revision;
+        BeginAppearanceCollectionSync(player, *state);
+        SendVanityCollection(player, *state);
+        SendOwnedVanityStoreRecords(player, *state);
+        LearnOwnedBankSpells(player, *state, false);
+        QueueOwnedCompanionSpells(player, *state);
+    }
+
   bool LoadClientData() {
     _appearances.clear();
     _itemAppearances.clear();
@@ -3429,6 +3556,7 @@ public:
                "Ascension item-set expansion is unavailable; individual "
                "appearance categories remain usable");
 
+    BuildSeasonCatalog();
     _clientDataLoaded =
         appearancesLoaded && itemAppearancesLoaded && vanityLoaded;
     return _clientDataLoaded;
@@ -3511,6 +3639,7 @@ public:
   }
 
   void OnPlayerUpdate(Player *player, uint32 diff) {
+    ProcessSeasonRefresh(player);
     std::deque<WorldPacket> packets;
     uint32 accountId = player->GetSession()->GetAccountId();
     {
@@ -4699,6 +4828,9 @@ private:
     return expanded;
   }
 
+  std::vector<AscensionSeasonCollection::Entry> _seasonEntries;
+  // Accessed only under _stateMutex, including reads on map update threads.
+  std::unordered_map<uint32, uint64> _seasonRevisions;
   bool _clientDataLoaded = false;
   std::unordered_map<uint32, AppearanceInfo> _appearances;
   std::unordered_map<uint32, uint32> _itemAppearances;
@@ -6953,6 +7085,22 @@ class spell_ascension_experience_potion : public SpellScript
 };
 
 } // namespace
+
+bool AscensionSeasonCollection::Validate(std::string const& type, uint32 target, uint32 preview)
+{
+    return AscensionCollectionService::Instance().ValidateSeasonReward(type, target, preview);
+}
+
+std::vector<AscensionSeasonCollection::Entry> AscensionSeasonCollection::Browse(
+    std::string const& type, std::string const& search, uint32 offset)
+{
+    return AscensionCollectionService::Instance().BrowseSeasonRewards(type, search, offset);
+}
+
+void AscensionSeasonCollection::Refresh(uint32 account)
+{
+    AscensionCollectionService::Instance().QueueSeasonRefresh(account);
+}
 
 bool IsAscensionPrimalistTameEligible(Player const* player)
 {

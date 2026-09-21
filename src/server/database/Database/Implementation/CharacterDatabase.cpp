@@ -698,6 +698,104 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_INS_MANASTORM_CACHE_INVENTORY, "INSERT INTO character_inventory (guid, bag, slot, item) VALUES (?, ?, ?, ?)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_MANASTORM_INVENTORY_ITEM, "SELECT COUNT(*) FROM character_inventory ci INNER JOIN item_instance ii ON ii.guid = ci.item AND ii.owner_guid = ci.guid WHERE ci.guid = ? AND ci.item = ?", CONNECTION_SYNCH);
 
+    // Each list includes a NULL sentinel: an empty result then unambiguously means query failure.
+    // NULL keeps table integer widths intact (an unsigned BIGINT zero would widen INT columns).
+    PrepareStatement(CHAR_SEL_COA_SCHEMA,
+        "SELECT (SELECT COUNT(*) FROM `coa_season`), (SELECT COUNT(*) FROM `coa_season_settings`), "
+        "(SELECT COUNT(*) FROM `coa_season_tier`), (SELECT COUNT(*) FROM `coa_season_account`), (SELECT "
+        "COUNT(*) FROM `coa_season_reward`), (SELECT COUNT(*) FROM `coa_season_daily_kill`), (SELECT "
+        "COUNT(*) FROM `coa_season_level_reward`), (SELECT COUNT(*) FROM `coa_season_request`), (SELECT "
+        "COUNT(*) FROM `coa_season_purchase`), (SELECT COUNT(*) FROM `coa_season_audit`)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_SEASONS,
+        "SELECT 1 AS valid, `id`, `name`, `status`, `revision`, `created`, `activated` FROM `coa_season` "
+        "UNION ALL SELECT 0, NULL, NULL, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_SETTINGS,
+        "SELECT 1 AS valid, `season`, `key`, `value` FROM `coa_season_settings` UNION ALL SELECT 0, NULL, "
+        "NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_TIERS,
+        "SELECT 1 AS valid, `season`, `tier`, `threshold`, `points` FROM `coa_season_tier` UNION ALL "
+        "SELECT 0, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_ACCOUNTS,
+        "SELECT 1 AS valid, `season`, `account`, `progress`, `points`, `earned`, `spent`, `mask` FROM "
+        "`coa_season_account` UNION ALL SELECT 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_REWARDS,
+        "SELECT 1 AS valid, `season`, `id`, `type`, `target`, `preview`, `count`, `cost`, `min_tier`, "
+        "`enabled`, `display_order`, `name`, `category` FROM `coa_season_reward` UNION ALL SELECT 0, "
+        "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_LOCKOUTS,
+        "SELECT 1 AS valid, `season`, `account`, `entry`, `last_time` FROM `coa_season_daily_kill` UNION "
+        "ALL SELECT 0, NULL, NULL, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_LEVELS,
+        "SELECT 1 AS valid, `character_guid`, `highest_level` FROM `coa_season_level_reward` UNION ALL "
+        "SELECT 0, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_REQUEST,
+        "SELECT 1 AS valid, `payload`, `response` FROM `coa_season_request` WHERE `account` = ? AND "
+        "`request_id` = ? UNION ALL SELECT 0, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_PURCHASES,
+        "SELECT 1 AS valid, `reward` FROM `coa_season_purchase` WHERE `season` = ? AND `account` = ? "
+        "UNION ALL SELECT 0, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_REP_COA_SEASON,
+        "INSERT INTO `coa_season` (`id`, `name`, `status`, `revision`, `created`, `activated`) VALUES (?, "
+        "?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `status` = VALUES(`status`), "
+        "`revision` = VALUES(`revision`), `activated` = VALUES(`activated`)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_REP_COA_SETTING,
+        "INSERT INTO `coa_season_settings` (`season`, `key`, `value`) VALUES (?, ?, ?) ON DUPLICATE KEY "
+        "UPDATE `value` = VALUES(`value`)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_REP_COA_TIER,
+        "INSERT INTO `coa_season_tier` (`season`, `tier`, `threshold`, `points`) VALUES (?, ?, ?, ?) ON "
+        "DUPLICATE KEY UPDATE `threshold` = VALUES(`threshold`), `points` = VALUES(`points`)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_REP_COA_ACCOUNT,
+        "INSERT INTO `coa_season_account` (`season`, `account`, `progress`, `points`, `earned`, `spent`, "
+        "`mask`) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `progress` = VALUES(`progress`), "
+        "`points` = VALUES(`points`), `earned` = VALUES(`earned`), `spent` = VALUES(`spent`), `mask` = "
+        "VALUES(`mask`)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_REP_COA_REWARD,
+        "INSERT INTO `coa_season_reward` (`season`, `id`, `type`, `target`, `preview`, `count`, `cost`, "
+        "`min_tier`, `enabled`, `display_order`, `name`, `category`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+        "?, ?, ?) ON DUPLICATE KEY UPDATE `type` = VALUES(`type`), `target` = VALUES(`target`), `preview` "
+        "= VALUES(`preview`), `count` = VALUES(`count`), `cost` = VALUES(`cost`), `min_tier` = "
+        "VALUES(`min_tier`), `enabled` = VALUES(`enabled`), `display_order` = VALUES(`display_order`), "
+        "`name` = VALUES(`name`), `category` = VALUES(`category`)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_REP_COA_LOCKOUT,
+        "INSERT INTO `coa_season_daily_kill` (`season`, `account`, `entry`, `last_time`) VALUES (?, ?, ?, "
+        "?) ON DUPLICATE KEY UPDATE `last_time` = VALUES(`last_time`)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_REP_COA_LEVEL,
+        "INSERT INTO `coa_season_level_reward` (`character_guid`, `highest_level`) VALUES (?, ?) ON "
+        "DUPLICATE KEY UPDATE `highest_level` = VALUES(`highest_level`)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_COA_ACCOUNTS,
+        "DELETE FROM `coa_season_account` WHERE `season` = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_COA_LOCKOUTS,
+        "DELETE FROM `coa_season_daily_kill` WHERE `season` = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_COA_REQUEST,
+        "INSERT INTO `coa_season_request` (`account`, `request_id`, `payload`, `response`, `created`) "
+        "VALUES (?, ?, ?, ?, ?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_COA_PURCHASE,
+        "INSERT INTO `coa_season_purchase` (`season`, `account`, `character_guid`, `reward`, `type`, "
+        "`target`, `count`, `cost`, `request_id`, `created`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_COA_AUDIT,
+        "INSERT INTO `coa_season_audit` (`season`, `account`, `action`, `created`) VALUES (?, ?, ?, ?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_HISTORY,
+        "SELECT 1 AS valid, `created`, `account`, `action` FROM (SELECT `id`, `created`, `account`, "
+        "`action` FROM `coa_season_audit` WHERE `season` = ? ORDER BY `id` DESC LIMIT 25 OFFSET ?) AS "
+        "history UNION ALL SELECT 0, NULL, NULL, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_APPEARANCE,
+        "SELECT EXISTS (SELECT 1 FROM `account_appearance_collection` WHERE `account_id` = ? AND "
+        "`appearance_id` = ?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_APPEARANCES,
+        "SELECT 1 AS valid, `appearance_id` FROM `account_appearance_collection` WHERE `account_id` = ? "
+        "UNION ALL SELECT 0, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_COA_APPEARANCE,
+        "INSERT INTO `account_appearance_collection` (`account_id`, `appearance_id`, `source_item`) "
+        "VALUES (?, ?, 0)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_VANITY,
+        "SELECT EXISTS (SELECT 1 FROM `account_vanity_collection` WHERE `account_id` = ? AND `item_id` = "
+        "?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_COA_VANITIES,
+        "SELECT 1 AS valid, `item_id` FROM `account_vanity_collection` WHERE `account_id` = ? UNION ALL "
+        "SELECT 0, NULL", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_COA_VANITY,
+        "INSERT INTO `account_vanity_collection` (`account_id`, `item_id`) VALUES (?, ?)", CONNECTION_ASYNC);
+
     PrepareStatement(CHAR_INS_PLAYER_ANTICHEAT_ALERT, "INSERT INTO player_anticheat_alert (account, guid, name, reason, details, size) VALUES (?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
 }
 

@@ -1,0 +1,4 @@
+# Account-wide season progression. Reloaded with the world configuration.
+# Once enabled and initialized, legacy Ethereal Bazaar quest/kill token income is suppressed.
+# Season configuration, activities, offers, and windows come from the characters database.
+CoASeason.Enable = 0

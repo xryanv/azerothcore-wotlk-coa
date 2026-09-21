@@ -81,6 +81,13 @@ A.Receive("1|"..request.."|BEGIN|3|1|Third|0|0|0|1|active","Tester")
 for i=1,7 do A.Receive("1|"..request.."|TIER|"..i.."|"..(i*100).."|25","Tester")end
 A.Receive("1|"..request.."|END|7","Tester")
 check(A.state==prior, "snapshot missing economy settings rejected")
+request=A.Refresh()
+A.Receive("1|"..request.."|BEGIN|0|0|No active season|0|0|0|1|unconfigured","Tester")
+for _,key in ipairs(A.settingKeys) do A.Receive("1|"..request.."|SETTING|"..key.."|0","Tester") end
+for i=1,7 do A.Receive("1|"..request.."|TIER|"..i.."|"..(i*100).."|25","Tester") end
+A.Receive("1|"..request.."|END|"..(#A.settingKeys+7),"Tester")
+check(A.state and A.state.season==0 and A.state.admin and A.state.status=="unconfigured",
+    "GM bootstrap snapshot is accepted before the first active season")
 local firstSessionId=A.Request("GET")
 dofile(root .. "Protocol.lua")
 local secondSessionId=CoASeason.Request("GET")
