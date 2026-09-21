@@ -1,7 +1,7 @@
 # CoA Seasonal Progression and Bazaar Economy Design
 
 Date: 2026-09-21
-Status: Revised after in-client acceptance review; pending user review
+Status: Revised after GM/player UI clarification; pending user review
 Target: `jealous-sound/azerothcore-wotlk-coa` forked as `xryanv/azerothcore-wotlk-coa`
 
 ## 1. Purpose
@@ -19,12 +19,16 @@ Normal World of Warcraft acquisition remains authoritative. Quest rewards, world
 
 ## 2. Design principles
 
-- Reuse Ascension's existing Seasonal Collection and Collections/vanity browsing experience rather than replace it.
+- Keep `CoA_SeasonProgression` as a separate companion addon that extends Ascension at runtime rather than patching or replacing Ascension's shipped addon files.
+- Register Season as a first-class tab inside Ascension's normal Collections window so ordinary players experience it alongside Vanity, Wardrobe, Trees, and other existing Ascension tabs.
+- Give GMs the same player-facing Season tab plus additional GM-only controls; do not create a different player experience for GM accounts.
+- Keep the ordinary Ascension Wardrobe/Vanity browsers unchanged for normal players. Administrative reward selection must use a separate GM-only editing surface.
+- Reuse Ascension's existing preview/model/data components inside the GM picker where practical rather than rebuilding rendering from scratch.
 - Keep Season Points cumulative and non-spendable; Bazaar Tokens are the only shop currency introduced by this system.
 - Keep all progression, reward granting, and GM authorization server-authoritative.
 - Make progression values, tier thresholds, Bazaar Token values, and tier reward assignments editable live by GM accounts.
 - Keep permanent ownership separate from seasonal state so rollover can never remove earned cosmetics/items.
-- Avoid overlapping custom windows with Ascension's existing UI; use the native frames for reward browsing and preview whenever possible.
+- Avoid graphical overlap by integrating the player Season page through Ascension's tab system and keeping GM management surfaces compact and explicit.
 
 ## 3. Existing assets to reuse
 
@@ -41,9 +45,9 @@ The client already contains the original seasonal presentation code and related 
 
 `SeasonRewardMixin` already previews individual items, complete item sets, creatures/mount-style appearances, weapon illusions, static spell visuals, and animated spell visuals. That renderer remains the preferred preview path.
 
-The existing tier circles are real `SeasonTierMixin` buttons and can be adapted for GM editing without replacing the seven-node progress bar.
+The existing tier circles are real `SeasonTierMixin` buttons. For ordinary players they remain progression selectors; for a server-confirmed GM they may additionally launch the dedicated GM Reward Picker without replacing the seven-node progress bar.
 
-The stock reward renderer already calls `C_Appearance.GetAppearanceDisplayInfo(appearanceID)`, and the client exposes native collection/store opening behavior such as `OpenStoreCollectionToCategory(...)`. The companion addon should use those native interfaces for reward selection rather than recreating an item browser.
+The stock reward renderer already calls `C_Appearance.GetAppearanceDisplayInfo(appearanceID)`, and the client exposes appearance/vanity data and preview APIs. The GM Reward Picker should reuse those data and rendering components where practical, while leaving Ascension's normal player Wardrobe/Vanity browser behavior untouched.
 
 The current CoA server already uses hidden `CHAT_MSG_ADDON` self-whispers successfully for custom client/server synchronization. The season system uses the same bounded transport.
 
@@ -55,11 +59,15 @@ The current CoA server already uses hidden `CHAT_MSG_ADDON` self-whispers succes
 
 ### 4.2 Client companion addon
 
-`CoA_SeasonProgression` adapts Ascension's existing Seasonal Collection frame. It supplies server-authoritative season state, threshold values, tier reward assignments, completion state, and GM edit behavior while retaining Ascension's artwork, tier bar, animations, and preview model code.
+`CoA_SeasonProgression` remains a separate addon from Ascension's shipped addons. It registers a **Season** tab into Ascension's normal Collections window and supplies server-authoritative season state, thresholds, tier reward assignments, completion state, and previews while retaining Ascension's overall Collections shell and visual language.
 
-### 4.3 GM administration UI
+For a normal account, the addon exposes only the player-facing Season tab. It must not alter the behavior of Ascension's ordinary Wardrobe, Vanity, Store, or other collection pages.
 
-GM level 3 accounts receive a compact Season Admin frame for season lifecycle, economy/progression settings, account diagnostics, and history. Reward browsing is deliberately removed from this custom frame and moved into Ascension's native collection UI.
+### 4.3 GM extensions
+
+A server-confirmed GM level 3 sees the exact same player-facing Season tab plus a small set of additional controls such as **Season Admin** and **Edit Tier Rewards**. These controls are absent for ordinary players.
+
+The GM administration frame owns season lifecycle, progression/economy settings, account diagnostics, and history. Tier-reward selection uses a dedicated GM-only reward picker owned by `CoA_SeasonProgression`. The picker may reuse Ascension's model renderer, item/appearance/vanity data APIs, search/filter concepts, and visual assets, but it must not convert Ascension's normal player Wardrobe or Vanity pages into administrative editors.
 
 The server authorizes every admin mutation. Client-side visibility is never treated as authorization.
 
@@ -178,58 +186,67 @@ Use authoritative map/difficulty/encounter data first, with creature rank as a f
 - dungeon boss: boss/encounter creature in a dungeon map;
 - rare elite / rare / elite: creature-template rank.
 
-## 10. Player Seasonal Collection UI
+## 10. Player Season tab inside Ascension Collections
 
-The ordinary player experience stays inside Ascension's existing `SeasonCollectionFrame`.
+The ordinary player experience is a first-class **Season** tab inside Ascension's existing Collections window, alongside the player's normal Ascension tabs such as Vanity, Wardrobe, Trees, and related collection pages.
 
-The companion addon supplies:
+`/coaseason` opens the normal Ascension Collections window directly on the Season tab.
+
+The Season tab supplies:
 
 - active season name/status;
 - current cumulative Season Points;
 - seven thresholds;
 - completed/locked tier state;
 - the one assigned reward for each tier;
-- permanent ownership/grant status.
+- permanent ownership/grant status;
+- native-style reward preview for the selected tier.
 
-The seven tier circles remain the primary progression affordance. Selecting or hovering a tier shows its assigned reward through Ascension's existing reward/model renderer.
+The seven tier circles remain the primary progression affordance. Selecting or hovering a tier shows its assigned reward and required cumulative points. Completed tiers show that the reward has been earned/granted.
 
-There is no purchase button or Seasonal Point balance-to-spend. For a locked tier the UI communicates the required cumulative Season Points. For a completed tier it communicates that the reward has been earned/granted.
+There is no purchase button or Seasonal Point balance-to-spend.
 
-The addon must clear stale native reward state when changing tiers/seasons so old previews, buttons, or collection data cannot overlap the current tier.
+For ordinary players, the Season tab contains **no GM controls** and never changes the behavior of Ascension's normal Wardrobe, Vanity, Store, Trees, or other tabs.
 
-## 11. GM tier-reward assignment flow
+The companion addon must clear stale reward state when changing tiers/seasons so old previews, buttons, or collection data cannot overlap the current tier.
 
-Reward assignment is performed from the native Ascension UI, not from a custom text catalog.
+## 11. GM-only reward assignment flow
 
-For a server-confirmed GM viewing a draft or editable season:
+GM reward assignment is an extension layered on top of the same Season tab, not a modification of the ordinary player collection browser.
 
-1. enter **GM Tier Edit Mode** from the season window;
-2. click one of the seven tier circles;
-3. the addon records the selected tier and opens Ascension's native collection/store browser;
-4. the GM browses/searches normally and uses Ascension's native preview experience to inspect the reward;
-5. while an eligible collection entry is selected, the addon adds one compact action such as **Assign to Tier 4**;
-6. pressing that action sends the selected grant/preview metadata to the server;
-7. the server validates GM security and reward validity, saves the one-to-one tier assignment, increments the season revision, and invalidates clients;
-8. returning to the season window immediately shows the assigned reward on that tier.
+For a server-confirmed GM viewing an editable season:
 
-The native collection browser remains responsible for category navigation, search, appearance/model preview, and collection presentation. The companion addon should add only the minimum selection/assignment affordance needed to capture the chosen reward.
+1. the Season tab shows the normal player view plus **Edit Tier Rewards** and **Season Admin**;
+2. selecting **Edit Tier Rewards** arms GM edit mode without changing normal player tabs;
+3. the GM clicks one of the seven tier circles;
+4. `CoA_SeasonProgression` opens a dedicated **GM Reward Picker** for that tier;
+5. the picker lets the GM browse/search eligible appearances, vanity rewards, and supported items using Ascension data sources and preview/rendering components;
+6. selecting an entry updates the preview but does not immediately save it;
+7. the picker shows an explicit action such as **Assign This Reward to Tier 4** plus **Cancel**;
+8. pressing Assign sends the selected grant/preview metadata to the server;
+9. the server validates GM security, season revision, tier number, reward type/id, and one-reward-per-tier rules, then saves the assignment and invalidates clients;
+10. the Season tab refreshes and immediately shows the newly assigned reward on that tier.
 
-When GM Tier Edit Mode is not active, Ascension's collection UI behaves normally.
+The GM picker is available only while the server-authoritative state says the account is an eligible GM. Closing it returns to the normal Season tab.
 
-If a reward type cannot be represented by the native collection browser, a narrow fallback "assign by validated ID" control may exist in the GM admin frame, but it is secondary and should not become a second full reward browser.
+The normal Ascension Wardrobe/Vanity/Store pages remain unchanged and usable as ordinary player interfaces even on a GM account when the GM picker is not open. The season addon must not globally hook a normal collection click so that it silently becomes an admin assignment.
+
+For physical item rewards that do not exist in Ascension's collection datasets, the GM picker may expose a narrow validated item-ID fallback within the same GM-only surface. This is not a second shop or a general text catalog.
 
 ## 12. GM Season Admin UI
 
-The custom Season Admin frame contains four responsibilities:
+The compact Season Admin frame contains four responsibilities:
 
 1. **Season** — create draft, select season, copy previous settings, activate/archive, and confirm rollover.
 2. **Economy** — edit activity Season Point awards, Bazaar Token level/boss values and chances, elite/rare lockout, and seven tier thresholds.
 3. **Accounts** — inspect account Season Points/tier completion and perform explicit GM test adjustments with an audit reason.
 4. **History** — inspect rollover, settings changes, tier-reward assignments, tier grants, and GM adjustments.
 
-The old custom **Rewards** browser/tab is removed.
+The old custom **Rewards** browser/tab remains removed. Reward selection belongs only to the dedicated GM Reward Picker launched from the Season tab.
 
-To prevent the graphical overlap seen during acceptance testing, opening the standalone Season Admin configuration frame hides/closes the large native season frame. Choosing **Edit Tier Rewards** closes/hides the admin configuration frame and returns to the native season frame in GM Tier Edit Mode. The two large management surfaces should not be displayed over one another.
+Opening Season Admin does not replace the player-facing Season experience. The Season tab may remain visible behind or beside the compact admin frame so a GM can compare configuration with what players see. The admin frame must be sized/positioned so it does not obscure or corrupt the Collections tab strip or tier presentation.
+
+`/coaseason admin` opens the Season tab and then the GM administration controls when the account is server-authorized. On a non-GM account it behaves as `/coaseason` and exposes no privileged controls.
 
 The UI provides Save, Discard Changes, Reset to Defaults, and Copy Previous Season Settings where applicable. Invalid min/max token ranges, negative values, non-increasing tier thresholds, and attempts to activate a season without all seven tier rewards are rejected both client-side and server-side.
 
@@ -314,7 +331,7 @@ Before enabling the final system on the live realm:
 2. set `AscensionCompat.UnlockLocalAppearanceCatalog = 0`;
 3. preserve all genuine permanent ownership records;
 4. create Season 1 with the approved default progression/Bazaar settings;
-5. assign one curated reward to each of the seven season tiers using the GM native-browser workflow;
+5. assign one curated reward to each of the seven season tiers using the dedicated GM Reward Picker;
 6. keep the existing Ethereal Bazaar and item `975001` intact;
 7. verify additional former shop/vanity items remain available through Bazaar configuration rather than a second Seasonal Point shop;
 8. verify normal quest/drop/crafting acquisition remains unchanged.
@@ -341,35 +358,38 @@ Before enabling the final system on the live realm:
 
 ### Client validation
 
-- existing Ascension seasonal frame opens without Lua errors;
-- no overlap between standalone Season Admin and the native season frame;
-- seven tier circles reflect server thresholds/completion and no longer display obsolete point-payout/purchase semantics;
-- selecting a tier shows its one assigned reward through the native renderer;
-- GM Tier Edit Mode makes tier circles editable without changing normal player behavior;
-- clicking a tier opens the native Ascension collection browser;
-- item/set/creature/mount/illusion/spell-visual previews remain native;
-- **Assign to Tier N** saves and immediately refreshes the tier reward;
-- no custom reward list is required for normal assignment;
-- non-GM accounts cannot invoke tier assignment even with crafted addon messages.
+- `CoA_SeasonProgression` remains a separate addon and does not overwrite Ascension's shipped addon files;
+- Season appears as a proper tab in the normal Ascension Collections window;
+- `/coaseason` opens Collections directly to Season;
+- ordinary players see tier progression/rewards but no GM buttons or admin reward picker;
+- normal Wardrobe, Vanity, Store, Trees, and other Ascension tabs retain their normal behavior;
+- seven tier circles reflect server thresholds/completion and no obsolete point-payout/purchase semantics;
+- selecting a tier shows its one assigned reward through the reused/native-style renderer;
+- GM accounts see the same player Season tab plus GM-only controls;
+- GM Tier Edit Mode opens the dedicated GM Reward Picker rather than repurposing the normal Wardrobe/Vanity pages;
+- selecting a candidate only previews it; **Assign This Reward to Tier N** is an explicit second action;
+- successful assignment refreshes the selected tier immediately;
+- closing/cancelling the GM picker leaves the ordinary Ascension collection pages unchanged;
+- Season Admin can coexist with the Season tab without graphical corruption or hiding the player view;
+- non-GM accounts cannot invoke assignment/admin mutations even with crafted addon messages.
 
 ### Full-stack acceptance
 
-On an isolated clone, run a complete draft and active season with a GM and non-GM account. Assign all seven rewards through the native browser, earn Season Points through several event types, cross multiple tiers, verify permanent grants, farm/spend Bazaar Tokens, relog, and roll to a new season. Confirm Season Points reset while all earned tier rewards and Bazaar Tokens survive.
+On an isolated clone, run a complete draft and active season with both a GM and non-GM account. Verify the non-GM Collections window has the Season tab and no privileged controls. On the GM account, assign all seven rewards through the dedicated picker with explicit confirmation, earn Season Points through several event types, cross multiple tiers, verify permanent grants, farm/spend Bazaar Tokens, relog, and roll to a new season. Confirm Season Points reset while all earned tier rewards and Bazaar Tokens survive.
 
 ## 20. Deployment and rollback
 
-Ship disabled by default until the revised schema, server hooks, native UI adaptation, and full-stack acceptance pass.
+Ship disabled by default until the revised schema, server hooks, Collections-tab integration, GM-only picker, and full-stack acceptance pass.
 
 Recommended revised rollout order:
 
-1. replace the pending spendable-point schema with cumulative Season Points + one reward per tier;
-2. refactor server progression/tier-grant logic and remove season purchase handling;
-3. simplify client protocol/state by removing purchase/catalog paths;
-4. clean up the native season frame integration and stale visual state;
-5. implement GM Tier Edit Mode and native collection-browser assignment;
-6. simplify the standalone admin window to Season/Economy/Accounts/History;
-7. rebuild and repeat isolated full-stack acceptance;
-8. only then prepare live migration/config deployment.
+1. keep the cumulative Season Points + one reward per tier backend already established;
+2. register Season as a first-class tab inside Ascension Collections from the separate `CoA_SeasonProgression` addon;
+3. ensure the normal player Season tab contains no privileged controls and does not alter normal Ascension tabs;
+4. replace the temporary normal-browser assignment hooks with a dedicated GM Reward Picker using reusable Ascension preview/data components;
+5. keep Season Admin compact and able to coexist visually with the player-facing Season tab;
+6. rebuild/reload the addon and repeat isolated GM/non-GM full-stack acceptance;
+7. only then prepare live migration/config deployment.
 
 Rollback remains non-destructive: disabling the module stops new progression/grants while leaving permanent collection records untouched. The global unlock flags may be temporarily re-enabled for diagnosis without deleting season history.
 
@@ -381,20 +401,32 @@ Rejected after in-client review. It duplicates shop responsibilities, requires t
 
 ### Keep the custom text/list reward browser
 
-Rejected as the main reward editor. It technically works but loses the polished Ascension browsing and preview experience and produced unnecessary graphical overlap during acceptance testing.
+Rejected as the main reward editor. It technically works but loses the polished Ascension browsing and preview experience.
+
+### Repurpose Ascension's normal Wardrobe/Vanity browser for GM assignment
+
+Rejected after runtime testing. Although it reuses native browsing, it makes the ordinary player browser context-dependent, lacks an obvious explicit confirmation step, and risks admin hooks leaking into normal player behavior.
+
+### Hide Ascension's other Collections tabs when opening Season
+
+Rejected. Players should see Season as one normal tab alongside their existing Vanity, Wardrobe, Trees, and other Ascension pages.
 
 ### Rewrite `SeasonalAppearances.dbc` every season
 
 Rejected because routine reward changes would require repatching client data.
 
-### Selected: cumulative Season Points + native tier assignment
+### Selected: cumulative Season Points + player Season tab + GM-only extensions
 
-Season Points are progression only. Each tier grants one permanent reward. Bazaar Tokens buy everything else. GMs assign tier rewards by clicking the existing tier circles and selecting through Ascension's native collection/preview UI.
+Season Points are progression only. Each tier grants one permanent reward. Bazaar Tokens buy everything else. All players get the same Season tab in Ascension Collections; GM status adds admin controls and a dedicated reward picker without modifying the ordinary player collection pages.
 
 ## 22. Success criteria
 
-The design is complete when a GM can create/configure a season, tune Season Point/Bazaar values, click any tier circle, browse and preview rewards in Ascension's native collection UI, and assign exactly one permanent reward to that tier; a normal human account can earn cumulative Season Points, automatically receive each tier reward exactly once, earn/spend Bazaar Tokens for additional items, and then enter a new season with Season Points reset while every previously earned reward and Bazaar Token remains intact.
+The design is complete when an ordinary player can open Ascension Collections, select the Season tab, see cumulative progression, all seven tier thresholds, and the reward available at each tier without seeing any GM controls or altered Wardrobe/Vanity behavior; a GM sees that same Season tab plus explicit administrative controls, can open a dedicated preview-capable reward picker, select a candidate and deliberately confirm **Assign This Reward to Tier N**, and can manage season/economy/account/history settings without corrupting the normal Collections UI. The server must still grant each earned tier reward exactly once, preserve permanent ownership/Bazaar Tokens across rollover, and reject all unauthorized mutations.
 
 ## 23. Revision note
+
+This revision incorporates the in-client GM/player separation clarification. The previous revision correctly simplified the economy to cumulative Season Points and one automatic reward per tier, but its interim plan of repurposing Ascension's ordinary Wardrobe/Vanity pages for GM assignment proved too invasive. The target design now treats Season as a normal player Collections tab provided by the separate `CoA_SeasonProgression` addon, with GM status only adding privileged controls and a dedicated reward-picker surface. Temporary normal-browser assignment hooks are implementation scaffolding to be removed before acceptance.
+
+
 
 This revision supersedes the earlier spendable Seasonal Point purchase model already partially implemented on the feature branch. The isolated runtime test proved the server migration, GM bootstrap, addon transport, and native season-frame integration are viable, but also exposed graphical overlap and confirmed that reward selection belongs in Ascension's native browser. The next implementation plan must explicitly remove the superseded purchase/catalog behavior rather than layering the new design on top of it.
