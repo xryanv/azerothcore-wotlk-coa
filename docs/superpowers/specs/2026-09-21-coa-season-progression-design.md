@@ -1,7 +1,7 @@
 # CoA Seasonal Progression and Bazaar Economy Design
 
 Date: 2026-09-21
-Status: Revised after GM/player UI clarification; pending user review
+Status: Revised after native-tab/admin-mode clarification; pending user review
 Target: `jealous-sound/azerothcore-wotlk-coa` forked as `xryanv/azerothcore-wotlk-coa`
 
 ## 1. Purpose
@@ -190,7 +190,9 @@ Use authoritative map/difficulty/encounter data first, with creature rank as a f
 
 The ordinary player experience is a first-class **Season** tab inside Ascension's existing Collections window, alongside the player's normal Ascension tabs such as Vanity, Wardrobe, Trees, and related collection pages.
 
-`/coaseason` opens the normal Ascension Collections window directly on the Season tab.
+Season is registered through the same Ascension tab/navigation mechanism used by the existing Collections/Character Advancement pages, so opening Ascension normally (for example with its existing `N` key behavior) exposes Season alongside the other tabs.
+
+An optional `/coaseason` shortcut may remain as convenience behavior for macros, action-bar bindings, debugging, or direct navigation; it simply opens Ascension and selects the Season tab. It is not required for ordinary access.
 
 The Season tab supplies:
 
@@ -227,9 +229,9 @@ For a server-confirmed GM viewing an editable season:
 9. the server validates GM security, season revision, tier number, reward type/id, and one-reward-per-tier rules, then saves the assignment and invalidates clients;
 10. the Season tab refreshes and immediately shows the newly assigned reward on that tier.
 
-The GM picker is available only while the server-authoritative state says the account is an eligible GM. Closing it returns to the normal Season tab.
+The GM picker is available only while the server-authoritative state says the account is an eligible GM **and** session-local admin mode is enabled. Closing it returns to the normal Season tab while preserving the current admin-mode setting.
 
-The normal Ascension Wardrobe/Vanity/Store pages remain unchanged and usable as ordinary player interfaces even on a GM account when the GM picker is not open. The season addon must not globally hook a normal collection click so that it silently becomes an admin assignment.
+The normal Ascension Wardrobe/Vanity/Store pages remain unchanged and usable as ordinary player interfaces even on a GM account, including while admin mode is enabled. The season addon must not globally hook a normal collection click so that it silently becomes an admin assignment.
 
 For physical item rewards that do not exist in Ascension's collection datasets, the GM picker may expose a narrow validated item-ID fallback within the same GM-only surface. This is not a second shop or a general text catalog.
 
@@ -246,7 +248,9 @@ The old custom **Rewards** browser/tab remains removed. Reward selection belongs
 
 Opening Season Admin does not replace the player-facing Season experience. The Season tab may remain visible behind or beside the compact admin frame so a GM can compare configuration with what players see. The admin frame must be sized/positioned so it does not obscure or corrupt the Collections tab strip or tier presentation.
 
-`/coaseason admin` opens the Season tab and then the GM administration controls when the account is server-authorized. On a non-GM account it behaves as `/coaseason` and exposes no privileged controls.
+GM editing is controlled by a separate session-local admin mode. `/coaseason admin` toggles that mode, while `/coaseason admin on` and `/coaseason admin off` provide deterministic forms suitable for macros/testing. The mode may reveal GM-only controls only after the server has confirmed GM level 3. On a non-GM account these commands cannot enable privileged controls or authorize mutations.
+
+Admin mode does not replace or reopen the Ascension window by itself. When Ascension is opened normally, the Season tab reflects the current admin-mode state: ordinary view when off; ordinary view plus privileged controls when on.
 
 The UI provides Save, Discard Changes, Reset to Defaults, and Copy Previous Season Settings where applicable. Invalid min/max token ranges, negative values, non-increasing tier thresholds, and attempts to activate a season without all seven tier rewards are rejected both client-side and server-side.
 
@@ -360,12 +364,14 @@ Before enabling the final system on the live realm:
 
 - `CoA_SeasonProgression` remains a separate addon and does not overwrite Ascension's shipped addon files;
 - Season appears as a proper tab in the normal Ascension Collections window;
-- `/coaseason` opens Collections directly to Season;
+- Season is registered through the same native tab/navigation system as Ascension's existing pages and is reachable through the normal Ascension UI opened with `N`;
+- optional `/coaseason` direct-opens Ascension to Season for macros/keybinds without being required for normal use;
 - ordinary players see tier progression/rewards but no GM buttons or admin reward picker;
 - normal Wardrobe, Vanity, Store, Trees, and other Ascension tabs retain their normal behavior;
 - seven tier circles reflect server thresholds/completion and no obsolete point-payout/purchase semantics;
 - selecting a tier shows its one assigned reward through the reused/native-style renderer;
-- GM accounts see the same player Season tab plus GM-only controls;
+- GM accounts see the same player Season tab by default; GM-only controls appear only when server-confirmed admin mode is enabled;
+- `/coaseason admin` toggles admin mode and `/coaseason admin on|off` sets it deterministically;
 - GM Tier Edit Mode opens the dedicated GM Reward Picker rather than repurposing the normal Wardrobe/Vanity pages;
 - selecting a candidate only previews it; **Assign This Reward to Tier N** is an explicit second action;
 - successful assignment refreshes the selected tier immediately;
@@ -425,7 +431,7 @@ The design is complete when an ordinary player can open Ascension Collections, s
 
 ## 23. Revision note
 
-This revision incorporates the in-client GM/player separation clarification. The previous revision correctly simplified the economy to cumulative Season Points and one automatic reward per tier, but its interim plan of repurposing Ascension's ordinary Wardrobe/Vanity pages for GM assignment proved too invasive. The target design now treats Season as a normal player Collections tab provided by the separate `CoA_SeasonProgression` addon, with GM status only adding privileged controls and a dedicated reward-picker surface. Temporary normal-browser assignment hooks are implementation scaffolding to be removed before acceptance.
+This revision incorporates the native-tab/admin-mode clarification. Season is now explicitly treated as one more Ascension tab reached through Ascension's normal navigation (including the existing `N` entry point), with `/coaseason` retained only as an optional direct-navigation shortcut. GM privileges are exposed through a separate session-local `/coaseason admin [on|off]` editing mode layered on the same Season tab. It also preserves the earlier in-client GM/player separation clarification. The previous revision correctly simplified the economy to cumulative Season Points and one automatic reward per tier, but its interim plan of repurposing Ascension's ordinary Wardrobe/Vanity pages for GM assignment proved too invasive. The target design now treats Season as a normal player Collections tab provided by the separate `CoA_SeasonProgression` addon, with GM status only adding privileged controls and a dedicated reward-picker surface. Temporary normal-browser assignment hooks are implementation scaffolding to be removed before acceptance.
 
 
 
