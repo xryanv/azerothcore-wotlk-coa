@@ -5,6 +5,11 @@
 
 namespace CoASeason
 {
+    inline bool EligibleHumanSession(bool hasSession, bool isBot)
+    {
+        return hasSession && !isBot;
+    }
+
     // Encounter and world-boss credits use activity caps, not a creature-entry lockout.
     inline bool RequiresEntryLockout(std::string_view activity)
     {

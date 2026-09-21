@@ -213,7 +213,7 @@ struct Service::Impl
     void Admin(RequestContext const& request);
     void BootstrapSnapshot(RequestContext const& request);
     void Snapshot(RequestContext const& request, uint32 seasonId);
-    void AwardProgress(Award const& award);
+    void AwardPoints(Award const& award);
     void Load(bool enabled);
     void ResolveCharacter(uint32 account, std::function<void(uint32)> callback);
     void ReconcileAccounts(RequestContext const& request, Season const& updated, std::string const& action);
@@ -1082,7 +1082,7 @@ void Service::Impl::Snapshot(RequestContext const& request, uint32 seasonId)
     busy = false;
 }
 
-void Service::Impl::AwardProgress(Award const& award)
+void Service::Impl::AwardPoints(Award const& award)
 {
     if (!ready.load() || (!active && award.activity != "login"))
     {
@@ -1249,7 +1249,7 @@ void Service::Enqueue(Award const& award)
         LOG_ERROR("module.coa_season", "Season economy queue is full; gameplay award was dropped");
         return;
     }
-    _impl->jobs.emplace_back([this, award] { _impl->AwardProgress(award); });
+    _impl->jobs.emplace_back([this, award] { _impl->AwardPoints(award); });
 }
 
 void Service::Request(Player* player, std::string const& payload)

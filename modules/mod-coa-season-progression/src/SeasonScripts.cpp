@@ -24,7 +24,8 @@ namespace
 
     bool Human(Player const* player)
     {
-        return player && player->GetSession() && !player->GetSession()->IsBot();
+        return player && CoASeason::EligibleHumanSession(player->GetSession() != nullptr,
+            player->GetSession() && player->GetSession()->IsBot());
     }
 
     void Credit(Player* player, std::string const& activity, uint32 creature = 0, bool lockout = false)

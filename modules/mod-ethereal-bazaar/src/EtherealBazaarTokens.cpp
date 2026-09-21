@@ -1,21 +1,9 @@
 /*
- * Where Bazaar Tokens come from.
+ * Legacy/fallback Bazaar Token income.
  *
- * The shop is only half the economy. Ascension sold tokens for real money and
- * let players buy them off the auction house; with the shop gone, the only way
- * left is to play. The rule the server owner asked for: a little from
- * everything, more from harder content.
- *
- *   quest turned in     0 to 12
- *   creature killed     0 to 3
- *   dungeon boss       14 to 22
- *   raid boss          41 to 53
- *
- * Every amount is multiplied at level 60, because a character that stops
- * levelling would otherwise stop earning.
- *
- * The zero in the lower two ranges is deliberate: most kills and some quests
- * give nothing at all, so tokens stay something one notices.
+ * When CoASeasonState is active, mod-coa-season-progression owns level/boss token earning and this script
+ * deliberately returns before granting anything. When the season module is disabled, these historical
+ * quest/creature ranges resume so the Bazaar still has a gameplay currency source.
  */
 
 #include "EtherealBazaar.h"

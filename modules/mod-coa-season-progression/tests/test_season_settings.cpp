@@ -9,6 +9,11 @@ int main()
     Settings settings = DefaultSettings();
     if (settings.size() != 24 || !ValidSettings(settings))
         return 1;
+    for (auto const& [key, expected] : std::map<std::string, uint32_t>{
+        {"quest", 3}, {"level", 10}, {"elite", 1}, {"rare", 2}, {"rare_elite", 3},
+        {"dungeon", 12}, {"heroic", 18}, {"raid", 30}, {"world", 40}})
+        if (settings.at(key) != expected)
+            return 10;
     if (!ValidSettingKey("quest") || !ValidSettingKey("world_chance") || ValidSettingKey("bogus"))
         return 2;
 

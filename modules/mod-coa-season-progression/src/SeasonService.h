@@ -20,7 +20,8 @@ struct Award
     bool lockout = false;
 };
 
-// Only Update owns economy state. Cross-thread ingress and per-player delivery are synchronized.
+// Only Update owns economy state. Gameplay Award events add cumulative Season Points and, where configured,
+// Bazaar Tokens; cross-thread ingress and per-player delivery are synchronized.
 class Service
 {
 public:

@@ -11,6 +11,7 @@ using Settings = std::map<std::string, uint32_t>;
 
 inline Settings DefaultSettings()
 {
+    // Cumulative Season Point awards per eligible activity; Bazaar Token settings remain separate below.
     return {{"quest", 3}, {"level", 10}, {"elite", 1}, {"rare", 2}, {"rare_elite", 3},
         {"dungeon", 12}, {"heroic", 18}, {"raid", 30}, {"world", 40}, {"level_tokens", 2},
         {"dungeon_min", 1}, {"dungeon_max", 3}, {"dungeon_chance", 100},
