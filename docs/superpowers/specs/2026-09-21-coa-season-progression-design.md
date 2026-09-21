@@ -1,7 +1,7 @@
 # CoA Seasonal Progression and Bazaar Economy Design
 
 Date: 2026-09-21
-Status: Design approved in chat; written spec awaiting review
+Status: Approved for final review and implementation by user on 2026-09-21
 Target: `jealous-sound/azerothcore-wotlk-coa` forked as `xryanv/azerothcore-wotlk-coa`
 
 ## 1. Purpose
@@ -351,3 +351,6 @@ Keep Ascension's frame and preview implementation while supplying active-season 
 ## 21. Success criteria
 
 The design is complete when a GM can create/configure a season in game, choose and preview rewards, tune all progression/token/tier values live, and activate the season; a normal human account can earn shared Season Progress through gameplay, receive tier Seasonal Points, spend them on permanent rewards in the existing Ascension seasonal UI, earn Bazaar Tokens from leveling/boss farming, and then experience a season rollover that resets only seasonal progress/points while preserving all permanent unlocks, physical items, and Bazaar Tokens.
+## 22. Implementation review refinements
+
+The implementation plan records the concrete RPC contract, legacy Bazaar grant suppression, durable delivery/commit acknowledgement, account serialization, group human credit, and real frame-instance adaptation. The initial catalog is explicitly curated through the GM editor to avoid importing ordinary gameplay loot. Runtime activation is a separate validation gate; source ships disabled by default.
